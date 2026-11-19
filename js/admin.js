@@ -134,7 +134,7 @@ function crudPage(cfg) {
 const yn = v => v ? '<span class="badge ok">نعم</span>' : '<span class="badge">لا</span>';
 
 /* ---------- صفحة طلبات بحالات ---------- */
-const LBL = { ref_no:'رقم الطلب', tracking_no:'رقم التتبع', status:'الحالة', created_at:'التاريخ', passenger_name:'اسم المسافر', passenger_phone:'هاتف المسافر', passenger_id_no:'رقم الهوية', seats:'المقاعد', total:'الإجمالي', sender_name:'المرسل', sender_phone:'هاتف المرسل', from_place:'من', receiver_name:'المستلم', receiver_phone:'هاتف المستلم', to_place:'إلى', weight_kg:'الوزن (كجم)', description:'الوصف', cost:'التكلفة', kind:'النوع', country:'الدولة', currency:'العملة', amount:'المبلغ', fee:'الرسوم', note:'ملاحظة', service:'الخدمة', full_name:'الاسم', phone:'الهاتف', id_no:'رقم الهوية', notes:'ملاحظات', service_name:'الخدمة', details:'التفاصيل', office_slug:'المكتب' };
+const LBL = { ref_no:'رقم الطلب', tracking_no:'رقم التتبع', status:'الحالة', created_at:'التاريخ', passenger_name:'اسم المسافر', passenger_phone:'هاتف المسافر', passenger_whatsapp:'واتساب المسافر', passenger_id_no:'رقم الهوية', seats:'المقاعد', total:'الإجمالي', sender_name:'المرسل', sender_phone:'هاتف المرسل', from_place:'من', receiver_name:'المستلم', receiver_phone:'هاتف المستلم', to_place:'إلى', weight_kg:'الوزن (كجم)', description:'الوصف', cost:'التكلفة', kind:'النوع', country:'الدولة', currency:'العملة', amount:'المبلغ', fee:'الرسوم', note:'ملاحظة', service:'الخدمة', full_name:'الاسم', phone:'الهاتف', id_no:'رقم الهوية', notes:'ملاحظات', service_name:'الخدمة', details:'التفاصيل', office_slug:'المكتب' };
 const HIDE = new Set(['id', 'user_id', 'trip_id', 'property_id', 'payment_proof_path', 'docs', 'lat', 'lng', 'trips', 'properties']);
 const fmtV = (k, v) => k === 'status' ? badge(v) : k === 'created_at' ? dt(v) : k === 'seats' ? (v || []).join('، ') : ['total', 'cost', 'fee', 'amount'].includes(k) ? num(v) : k === 'kind' ? ({ viewing:'معاينة', booking:'حجز', domestic:'داخلي', international:'خارجي' }[v] || esc(v)) : esc(v ?? '—');
 
@@ -207,7 +207,7 @@ function notifyModal(uid, name) {
 const NAV = [
   ['', 'لوحة التحكم', 'chart', 'home'],
   ['grp', 'الطلبات'],
-  ['bookings', 'الحجوزات', 'bus'], ['shipments', 'الإرساليات', 'package'], ['transfers', 'التحويلات', 'banknote'],
+  ['verify', 'التحقق من تذكرة', 'badge'], ['bookings', 'الحجوزات', 'bus'], ['shipments', 'الإرساليات', 'package'], ['transfers', 'التحويلات', 'banknote'],
   ['security', 'الموافقات الأمنية', 'shield'], ['proprequests', 'طلبات العقارات', 'home'], ['servicereq', 'طلبات الخدمات', 'file'],
   ['grp', 'المحتوى'],
   ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'المكاتب والأقسام', 'list'],
@@ -332,6 +332,41 @@ async function viewRates() {
   };
 }
 
+
+/* ---------- التحقق من تذكرة (إدخال الرقم أو مسح الباركود) ---------- */
+async function viewVerify(pre) {
+  page('التحقق من تذكرة', `<div class="card"><label style="margin-top:0">رقم الحجز (يبدأ بـ BK)</label><div class="row"><input id="vr" dir="ltr" placeholder="BK-XXXXXXX" value="${esc(pre || '')}" style="text-transform:uppercase"><button class="btn" id="vg">تحقق</button></div>
+    <div class="row wrap" style="margin-top:10px">${'BarcodeDetector' in window ? `<button class="btn ghost sm" id="vc">مسح الباركود بالكاميرا</button>` : '<span class="mut" style="font-size:13px">مسح الكاميرا غير مدعوم في هذا المتصفح (استخدم Chrome على أندرويد أو اكتب الرقم).</span>'}</div>
+    <video id="vv" playsinline muted style="display:none;width:100%;max-height:320px;border-radius:12px;margin-top:12px;background:#000"></video></div><div id="vout"></div>`);
+  let stream = null, timer = null;
+  const stop = () => { clearInterval(timer); if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; const v = document.getElementById('vv'); if (v) v.style.display = 'none'; };
+  const check = async raw => {
+    const ref = String(raw || '').trim().toUpperCase().replace(/^MAHATTA\|/, '').split('|')[0];
+    if (!ref) return toast('أدخل رقم الحجز');
+    const { data: b, error } = await sb.from('bookings').select('*, trips(from_city,to_city,depart_at)').eq('ref_no', ref).maybeSingle();
+    const out = document.getElementById('vout'); if (!out) return;
+    if (error) return fail(error);
+    if (!b) { out.innerHTML = `<div class="card"><div class="err">لا توجد تذكرة بالرقم ${esc(ref)}</div></div>`; return; }
+    const ok = b.status === 'confirmed';
+    out.innerHTML = `<div class="card" style="border:2px solid ${ok ? 'var(--ok)' : 'var(--bad)'}"><div class="row between"><h3 style="margin:0">${ok ? 'تذكرة صالحة' : 'التذكرة غير مؤكدة'}</h3>${badge(b.status)}</div>
+      <div class="kv"><span>رقم الحجز</span><b dir="ltr">${esc(b.ref_no)}</b></div><div class="kv"><span>المسافر</span><b>${esc(b.passenger_name)}</b></div><div class="kv"><span>الهاتف</span><b dir="ltr">${esc(b.passenger_phone)}</b></div><div class="kv"><span>الواتساب</span><b dir="ltr">${esc(b.passenger_whatsapp || '—')}</b></div>
+      <div class="kv"><span>الرحلة</span><b>${b.trips ? esc(b.trips.from_city) + ' ← ' + esc(b.trips.to_city) : '—'}</b></div><div class="kv"><span>الموعد</span><b>${b.trips ? dt(b.trips.depart_at) : '—'}</b></div><div class="kv"><span>المقاعد</span><b>${(b.seats || []).join('، ')}</b></div>
+      ${ok ? '' : '<div class="note">لا تسمح بالصعود قبل تأكيد الدفع من صفحة الحجوزات.</div>'}</div>`;
+  };
+  document.getElementById('vg').onclick = () => { stop(); check(val('vr')); };
+  document.getElementById('vr').onkeydown = e => { if (e.key === 'Enter') document.getElementById('vg').click(); };
+  const vc = document.getElementById('vc');
+  if (vc) vc.onclick = async () => {
+    try {
+      const det = new BarcodeDetector({ formats: ['qr_code'] }), v = document.getElementById('vv');
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); v.srcObject = stream; v.style.display = 'block'; await v.play();
+      timer = setInterval(async () => { try { const r = await det.detect(v); if (r.length) { const raw = r[0].rawValue; stop(); document.getElementById('vr').value = raw.replace(/^MAHATTA\|/, ''); check(raw); } } catch (_) {} }, 400);
+    } catch (e) { stop(); toast('تعذّر تشغيل الكاميرا، اسمح بالإذن أو اكتب الرقم.'); }
+  };
+  if (pre) check(pre);
+  window.addEventListener('hashchange', stop, { once: true });
+}
+
 /* ---------- الإعدادات ---------- */
 async function viewSettings() {
   const { data, error } = await sb.from('app_settings').select('*').order('key');
@@ -375,14 +410,15 @@ const PAGES = {
   banners: crudPage({ title: 'الإعلانات (بانرات الرئيسية)', single: 'إعلان', table: 'banners', order: 'sort', asc: true,
     fields: [{ k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'subtitle', l: 'النص الفرعي', full: 1 }, { k: 'color', l: 'اللون', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'link', l: 'الرابط داخل التطبيق (مثل #/trips أو #/office/hotels)', ltr: 1, full: 1 }, { k: 'active', l: 'ظاهر', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('الإعلان', r => `<b>${esc(r.title)}</b><div class="mut">${esc(r.subtitle || '')}</div>`), sp('اللون', r => `<span style="display:inline-block;width:22px;height:22px;border-radius:7px;background:${esc(r.color)};vertical-align:middle"></span>`), sp('ظاهر', r => yn(r.active))] }),
-  customers: viewCustomers, staff: viewStaff, rates: viewRates, reports: viewReports, settings: viewSettings
+  verify: () => viewVerify(), customers: viewCustomers, staff: viewStaff, rates: viewRates, reports: viewReports, settings: viewSettings
 };
 
 /* ---------- الموجّه ---------- */
 async function route() {
   if (!sb) { $app.innerHTML = '<div class="login"><div class="box"><div class="err">لم يتم ضبط اتصال Supabase. تأكد من أسرار المستودع ثم أعد النشر.</div></div></div>'; return; }
   if (!me) return viewLogin();
-  const key = (location.hash || '#/').replace(/^#\/?/, '').split('/')[0];
+  const parts = (location.hash || '#/').replace(/^#\/?/, '').split('/'), key = parts[0];
+  if (key === 'verify' && parts[1]) { current = 'verify'; loading(); return viewVerify(decodeURIComponent(parts[1])); }
   current = PAGES[key] || key === '' ? key : '';
   loading();
   try { await (key === '' || !PAGES[key] ? viewDashboard() : PAGES[key]()); } catch (e) { console.error(e); page('خطأ', `<div class="err">${esc(e.message || e)}</div>`); }
