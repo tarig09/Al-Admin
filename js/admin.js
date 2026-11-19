@@ -213,7 +213,7 @@ const NAV = [
   ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'المكاتب والأقسام', 'list'],
   ['services', 'الخدمات والأسعار', 'tag'], ['offers', 'العروض', 'percent'], ['banners', 'الإعلانات', 'megaphone'],
   ['grp', 'الإدارة'],
-  ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
+  ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
 ];
 let current = '';
 function page(title, html) {
@@ -410,6 +410,9 @@ const PAGES = {
   banners: crudPage({ title: 'الإعلانات (بانرات الرئيسية)', single: 'إعلان', table: 'banners', order: 'sort', asc: true,
     fields: [{ k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'subtitle', l: 'النص الفرعي', full: 1 }, { k: 'color', l: 'اللون', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'link', l: 'الرابط داخل التطبيق (مثل #/trips أو #/office/hotels)', ltr: 1, full: 1 }, { k: 'active', l: 'ظاهر', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('الإعلان', r => `<b>${esc(r.title)}</b><div class="mut">${esc(r.subtitle || '')}</div>`), sp('اللون', r => `<span style="display:inline-block;width:22px;height:22px;border-radius:7px;background:${esc(r.color)};vertical-align:middle"></span>`), sp('ظاهر', r => yn(r.active))] }),
+  paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true,
+    fields: [{ k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
+    cols: [sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
   verify: () => viewVerify(), customers: viewCustomers, staff: viewStaff, rates: viewRates, reports: viewReports, settings: viewSettings
 };
 
