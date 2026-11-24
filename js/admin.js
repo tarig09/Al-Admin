@@ -2,7 +2,7 @@
 (() => {
 const $app = document.getElementById('app');
 const sb = (window.ENV && ENV.SUPABASE_URL) ? supabase.createClient(ENV.SUPABASE_URL, ENV.SUPABASE_ANON_KEY) : null;
-let me = null, isSuper = false, officesCache = null;
+let me = null, isSuper = false, isAdm = false, myAg = [], officesCache = null, agCache = null;
 
 /* ---------- أدوات ---------- */
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -12,9 +12,9 @@ const dt = d => d ? new Date(d).toLocaleString('ar-EG', { dateStyle: 'medium', t
 const toast = m => { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2800); };
 const val = id => (document.getElementById(id)?.value ?? '').trim();
 const go = h => { location.hash = h; };
-const ST = {pending:['قيد المراجعة','warn'],payment_review:['مراجعة الدفع','info'],confirmed:['مؤكد','ok'],cancelled:['ملغي','bad'],received:['تم الاستلام','info'],in_transit:['في الطريق','warn'],arrived:['وصلت للوجهة','info'],delivered:['تم التسليم','ok'],processing:['قيد التنفيذ','warn'],completed:['مكتمل','ok'],approved:['تمت الموافقة','ok'],rejected:['مرفوض','bad']};
+const ST = {pending:['بانتظار التأكيد','warn'],accepted:['مقبول — بانتظار الدفع','info'],payment_review:['مراجعة الدفع','info'],confirmed:['مؤكد','ok'],cancelled:['ملغي','bad'],received:['تم الاستلام','info'],in_transit:['في الطريق','warn'],arrived:['وصلت للوجهة','info'],delivered:['تم التسليم','ok'],processing:['قيد التنفيذ','warn'],completed:['مكتمل','ok'],approved:['تمت الموافقة','ok'],rejected:['مرفوض','bad']};
 const badge = s => `<span class="badge ${(ST[s]||[s,''])[1]}">${(ST[s]||[s])[0]}</span>`;
-const fail = e => { console.error(e); toast(({forbidden:'لا تملك الصلاحية لهذا الإجراء.',user_not_found:'لا يوجد حساب بهذا البريد في التطبيق.'}[e?.message]) || e?.message || 'حدث خطأ'); };
+const fail = e => { console.error(e); toast(({forbidden:'لا تملك الصلاحية لهذا الإجراء.',user_not_found:'لا يوجد حساب بهذا البريد في التطبيق.',already_taken:'استلم مشرف آخر هذا الطلب.',not_handler:'يجب أن تستلم الطلب أولاً (أو استلمه مشرف آخر).',bad_transition:'هذا التغيير غير مسموح في الحالة الحالية.',not_found:'السجل غير موجود.'}[e?.message]) || e?.message || 'حدث خطأ'); };
 const tz = iso => { if (!iso) return ''; const d = new Date(iso), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 
 const IC = {
@@ -62,6 +62,10 @@ async function offices() {
   if (!officesCache) { const { data } = await sb.from('offices').select('slug,name_ar').order('sort'); officesCache = data || []; }
   return officesCache;
 }
+async function agencies() {
+  if (!agCache) { const { data } = await sb.from('agencies').select('id,name,section_slug').order('section_slug').order('sort'); agCache = data || []; }
+  return agCache;
+}
 async function fieldHtml(f, v) {
   const id = 'f_' + f.k, val0 = v ?? f.def ?? '';
   const full = f.full || f.t === 'textarea' ? ' full' : '';
@@ -69,7 +73,7 @@ async function fieldHtml(f, v) {
   if (f.t === 'textarea') input = `<textarea id="${id}">${esc(val0)}</textarea>`;
   else if (f.t === 'bool') return `<div class="${full}"><label><input type="checkbox" id="${id}" ${(v ?? f.def ?? true) ? 'checked' : ''}>${esc(f.l)}</label></div>`;
   else if (f.t === 'select') {
-    const opts = f.opts === 'offices' ? (await offices()).map(o => [o.slug, o.name_ar]) : f.opts;
+    const opts = f.opts === 'offices' ? (await offices()).map(o => [o.slug, o.name_ar]) : f.opts === 'agencies' ? (await agencies()).map(o => [o.id, o.name]) : f.opts;
     input = `<select id="${id}">${f.nullable ? '<option value="">— بدون —</option>' : ''}${opts.map(o => `<option value="${esc(o[0])}" ${String(o[0]) === String(val0) ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select>`;
   } else if (f.t === 'datetime') input = `<input id="${id}" type="datetime-local" value="${esc(tz(val0))}">`;
   else if (f.t === 'number') input = `<input id="${id}" type="number" step="any" inputmode="decimal" value="${esc(val0)}">`;
@@ -95,7 +99,10 @@ const missing = (fields, o) => fields.find(f => f.req && (o[f.k] === null || o[f
 /* ---------- صفحة CRUD عامة ---------- */
 function crudPage(cfg) {
   return async () => {
-    const { data, error } = await sb.from(cfg.table).select('*').order(cfg.order || 'created_at', { ascending: cfg.asc ?? false }).limit(500);
+    await agencies();
+    let cq = sb.from(cfg.table).select('*').order(cfg.order || 'created_at', { ascending: cfg.asc ?? false }).limit(500);
+    if (cfg.scoped && !isAdm) cq = cq.in('agency_id', myAg.length ? myAg : ['00000000-0000-0000-0000-000000000000']);
+    const { data, error } = await cq;
     if (error) return page(cfg.title, `<div class="err">${esc(error.message)}</div>`);
     let q = '';
     const draw = () => {
@@ -108,22 +115,23 @@ function crudPage(cfg) {
     document.getElementById('q').oninput = e => { q = e.target.value.trim().toLowerCase(); draw(); };
     const open = async rec => {
       const edit = !!rec;
-      const fh = (await Promise.all(cfg.fields.map(f => fieldHtml(edit && f.lock ? { ...f, ro: true } : f, rec?.[f.k])))).join('');
+      const flds = cfg.fields.filter(f => !(f.k === 'agency_id' && !isAdm));
+      const fh = (await Promise.all(flds.map(f => fieldHtml(edit && f.lock ? { ...f, ro: true } : f, rec?.[f.k])))).join('');
       const m = modal((edit ? 'تعديل: ' : 'إضافة: ') + cfg.single, `<div class="fg">${fh}</div><div class="act"><button class="btn" id="sv">حفظ</button>${edit && cfg.del !== false ? '<button class="btn red" id="dl">حذف</button>' : ''}</div>`);
       m.q('#sv').onclick = async e => {
-        const ff = cfg.fields.map(f => edit && f.lock ? { ...f, ro: true, edit: true } : f);
-        const o = readForm(ff); const bad = missing(ff.filter(f => !(f.ro && f.edit)), o);
+        const ff = flds.map(f => edit && f.lock ? { ...f, ro: true, edit: true } : f);
+        const o = readForm(ff); if (cfg.scoped && !isAdm && !edit) o.agency_id = myAg[0]; const bad = missing(ff.filter(f => !(f.ro && f.edit)), o);
         if (bad) return toast('أكمل الحقل: ' + bad.l);
         e.target.disabled = true;
         const r = edit ? await sb.from(cfg.table).update(o).eq(cfg.pk || 'id', rec[cfg.pk || 'id']) : await sb.from(cfg.table).insert(o);
         e.target.disabled = false; if (r.error) return fail(r.error);
-        if (cfg.table === 'offices') officesCache = null;
+        if (cfg.table === 'offices') officesCache = null; if (cfg.table === 'agencies') agCache = null;
         toast('تم الحفظ'); m.close(); route();
       };
       const dl = m.q('#dl'); if (dl) dl.onclick = async () => {
         if (!confirm('حذف هذا العنصر نهائياً؟')) return;
         const r = await sb.from(cfg.table).delete().eq(cfg.pk || 'id', rec[cfg.pk || 'id']); if (r.error) return fail(r.error);
-        if (cfg.table === 'offices') officesCache = null;
+        if (cfg.table === 'offices') officesCache = null; if (cfg.table === 'agencies') agCache = null;
         toast('تم الحذف'); m.close(); route();
       };
     };
@@ -134,13 +142,13 @@ function crudPage(cfg) {
 const yn = v => v ? '<span class="badge ok">نعم</span>' : '<span class="badge">لا</span>';
 
 /* ---------- صفحة طلبات بحالات ---------- */
-const LBL = { ref_no:'رقم الطلب', tracking_no:'رقم التتبع', status:'الحالة', created_at:'التاريخ', passenger_name:'اسم المسافر', passenger_phone:'هاتف المسافر', passenger_whatsapp:'واتساب المسافر', passenger_id_no:'رقم الهوية', seats:'المقاعد', total:'الإجمالي', sender_name:'المرسل', sender_phone:'هاتف المرسل', from_place:'من', receiver_name:'المستلم', receiver_phone:'هاتف المستلم', to_place:'إلى', weight_kg:'الوزن (كجم)', description:'الوصف', cost:'التكلفة', kind:'النوع', country:'الدولة', currency:'العملة', amount:'المبلغ', fee:'الرسوم', note:'ملاحظة', service:'الخدمة', full_name:'الاسم', phone:'الهاتف', id_no:'رقم الهوية', notes:'ملاحظات', service_name:'الخدمة', details:'التفاصيل', office_slug:'المكتب' };
-const HIDE = new Set(['id', 'user_id', 'trip_id', 'property_id', 'payment_proof_path', 'docs', 'lat', 'lng', 'trips', 'properties']);
+const LBL = { ref_no:'رقم الطلب', tracking_no:'رقم التتبع', status:'الحالة', created_at:'التاريخ', passenger_name:'اسم المسافر', passenger_phone:'هاتف المسافر', passenger_whatsapp:'واتساب المسافر', passenger_id_no:'رقم الهوية', seats:'المقاعد', total:'الإجمالي', sender_name:'المرسل', sender_phone:'هاتف المرسل', from_place:'من', receiver_name:'المستلم', receiver_phone:'هاتف المستلم', to_place:'إلى', weight_kg:'الوزن (كجم)', description:'الوصف', cost:'التكلفة', kind:'النوع', country:'الدولة', currency:'العملة', amount:'المبلغ', fee:'الرسوم', note:'ملاحظة', service:'الخدمة', full_name:'الاسم', phone:'الهاتف', id_no:'رقم الهوية', notes:'ملاحظات', service_name:'الخدمة', details:'التفاصيل', office_slug:'المكتب', handler_name:'المشرف المتابع' };
+const HIDE = new Set(['agency_id', 'handled_by', 'agencies', 'handler_phone', 'handler_name', 'handled_at', 'id', 'user_id', 'trip_id', 'property_id', 'payment_proof_path', 'docs', 'lat', 'lng', 'trips', 'properties']);
 const fmtV = (k, v) => k === 'status' ? badge(v) : k === 'created_at' ? dt(v) : k === 'seats' ? (v || []).join('، ') : ['total', 'cost', 'fee', 'amount'].includes(k) ? num(v) : k === 'kind' ? ({ viewing:'معاينة', booking:'حجز', domestic:'داخلي', international:'خارجي' }[v] || esc(v)) : esc(v ?? '—');
 
 function reqPage(cfg) {
   return async () => {
-    const { data, error } = await sb.from(cfg.table).select(cfg.select || '*').order('created_at', { ascending: false }).limit(500);
+    const { data, error } = await sb.from(cfg.table).select((cfg.select || '*') + ', agencies(name)').order('created_at', { ascending: false }).limit(500);
     if (error) return page(cfg.title, `<div class="err">${esc(error.message)}</div>`);
     let f = '', q = '';
     const draw = () => {
@@ -179,19 +187,37 @@ async function detail(cfg, r) {
   if (cfg.table === 'shipments') {
     extra += `<h3 style="margin:14px 0 0">موقع الإرسالية على الخريطة</h3><div class="fg"><div><label>خط العرض (lat)</label><input id="lat" type="number" step="any" value="${r.lat ?? ''}" dir="ltr"></div><div><label>خط الطول (lng)</label><input id="lng" type="number" step="any" value="${r.lng ?? ''}" dir="ltr"></div></div>`;
   }
+  const kvs2 = `<div class="kv"><span>المكتب</span><b>${esc(r.agencies?.name || '—')}</b></div><div class="kv"><span>المشرف المتابع</span><b>${esc(r.handler_name || 'لم يُستلم بعد')}${r.handler_phone ? `<br><small class="mut" dir="ltr">${esc(r.handler_phone)}</small>` : ''}</b></div>`;
   const opts = cfg.statuses.map(s => `<option value="${s}" ${s === r.status ? 'selected' : ''}>${ST[s][0]}</option>`).join('');
-  const m = modal(cfg.single || cfg.title, `${kvs}${extra}<label>تغيير الحالة</label><select id="st">${opts}</select>
-    <div class="act"><button class="btn" id="sv">حفظ الحالة</button>${cfg.table === 'bookings' && r.status !== 'confirmed' ? '<button class="btn green" id="ok">تأكيد الحجز</button>' : ''}${cfg.table === 'bookings' && r.status !== 'cancelled' ? '<button class="btn red" id="no">إلغاء الحجز</button>' : ''}<button class="btn ghost" id="nt">${ico('bell', 16)} إشعار للعميل</button></div>`);
-  const save = async status => {
-    const upd = { status };
-    if (cfg.table === 'shipments') { upd.lat = val('lat') === '' ? null : Number(val('lat')); upd.lng = val('lng') === '' ? null : Number(val('lng')); }
-    const x = await sb.from(cfg.table).update(upd).eq('id', r.id); if (x.error) return fail(x.error);
+  const bk = cfg.table === 'bookings';
+  const free = !r.handled_by && r.status === 'pending';
+  let btns = '';
+  if (free && (r.agency_id || !isAdm)) btns += `<button class="btn green" id="cl">${bk ? 'استلام وقبول الطلب' : 'استلام الطلب'}</button>`;
+  if (bk) {
+    if (r.status === 'payment_review') btns += '<button class="btn green" id="tk">إصدار التذكرة</button><button class="btn ghost" id="rj">رفض الإثبات (يعيد الطلب للدفع)</button>';
+    if (!['cancelled', 'confirmed'].includes(r.status)) btns += '<button class="btn red" id="no">إلغاء الحجز</button>';
+    if (isAdm && r.status !== 'confirmed') btns += '<button class="btn green" id="ok">تأكيد مباشر (مدير)</button>';
+  }
+  const canSet = !bk && (isAdm || r.handled_by);
+  const m = modal(cfg.single || cfg.title, `${kvs2}${kvs}${extra}${bk ? '' : `<label>تغيير الحالة</label><select id="st" ${canSet ? '' : 'disabled'}>${opts}</select>`}
+    ${!isAdm && !r.handled_by && r.status !== 'cancelled' ? '<div class="note">استلم الطلب أولاً لتتمكن من متابعته.</div>' : ''}
+    <div class="act">${canSet ? '<button class="btn" id="sv">حفظ الحالة</button>' : ''}${btns}${isAdm ? `<button class="btn ghost" id="nt">${ico('bell', 16)} إشعار للعميل</button>` : ''}</div>`);
+  const call = async (status, claimFirst) => {
+    if (claimFirst) { const c = await sb.rpc('agency_claim', { p_table: cfg.table, p_id: r.id }); if (c.error) return fail(c.error); }
+    if (status) {
+      const p = { p_table: cfg.table, p_id: r.id, p_status: status };
+      if (cfg.table === 'shipments') { p.p_lat = val('lat') === '' ? null : Number(val('lat')); p.p_lng = val('lng') === '' ? null : Number(val('lng')); }
+      const x = await sb.rpc('agency_set_status', p); if (x.error) return fail(x.error);
+    }
     toast('تم التحديث'); m.close(); route();
   };
-  m.q('#sv').onclick = () => save(val('st'));
-  if (m.q('#ok')) m.q('#ok').onclick = () => save('confirmed');
-  if (m.q('#no')) m.q('#no').onclick = () => { if (confirm('إلغاء الحجز وتحرير مقاعده؟')) save('cancelled'); };
-  m.q('#nt').onclick = () => notifyModal(r.user_id);
+  if (m.q('#sv')) m.q('#sv').onclick = () => call(val('st'));
+  if (m.q('#cl')) m.q('#cl').onclick = () => call(bk ? 'accepted' : null, true);
+  if (m.q('#tk')) m.q('#tk').onclick = () => call('confirmed');
+  if (m.q('#rj')) m.q('#rj').onclick = () => call('accepted');
+  if (m.q('#ok')) m.q('#ok').onclick = () => call('confirmed');
+  if (m.q('#no')) m.q('#no').onclick = () => { if (confirm('إلغاء الحجز وتحرير مقاعده؟')) call('cancelled'); };
+  if (m.q('#nt')) m.q('#nt').onclick = () => notifyModal(r.user_id);
 }
 
 function notifyModal(uid, name) {
@@ -204,22 +230,32 @@ function notifyModal(uid, name) {
 }
 
 /* ---------- الإطار العام ---------- */
-const NAV = [
+const NAV_ADMIN = [
   ['', 'لوحة التحكم', 'chart', 'home'],
   ['grp', 'الطلبات'],
   ['verify', 'التحقق من تذكرة', 'badge'], ['bookings', 'الحجوزات', 'bus'], ['shipments', 'الإرساليات', 'package'], ['transfers', 'التحويلات', 'banknote'],
   ['security', 'الموافقات الأمنية', 'shield'], ['proprequests', 'طلبات العقارات', 'home'], ['servicereq', 'طلبات الخدمات', 'file'],
+  ['grp', 'المكاتب (الوكالات)'],
+  ['agencies', 'المكاتب', 'building'], ['supervisors', 'المشرفون', 'users'], ['ratings', 'التقييمات', 'percent'],
   ['grp', 'المحتوى'],
-  ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'المكاتب والأقسام', 'list'],
+  ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'الأقسام', 'list'],
   ['services', 'الخدمات والأسعار', 'tag'], ['offers', 'العروض', 'percent'], ['banners', 'الإعلانات', 'megaphone'],
   ['grp', 'الإدارة'],
   ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
 ];
+const NAV_SUP = [
+  ['', 'لوحة المكتب', 'chart', 'home'],
+  ['grp', 'الطلبات'],
+  ['verify', 'التحقق من تذكرة', 'badge'], ['bookings', 'الحجوزات', 'bus'], ['shipments', 'الإرساليات', 'package'], ['transfers', 'التحويلات', 'banknote'],
+  ['security', 'الموافقات الأمنية', 'shield'], ['proprequests', 'طلبات العقارات', 'home'],
+  ['grp', 'مكتبي'],
+  ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offers', 'العروض', 'percent']
+];
 let current = '';
 function page(title, html) {
-  const items = NAV.map(n => n[0] === 'grp' ? `<div class="grp">${n[1]}</div>` : `<a class="it ${current === n[0] ? 'on' : ''}" href="#/${n[0]}">${ico(n[2], 19)}${n[1]}</a>`).join('');
+  const items = (isAdm ? NAV_ADMIN : NAV_SUP).map(n => n[0] === 'grp' ? `<div class="grp">${n[1]}</div>` : `<a class="it ${current === n[0] ? 'on' : ''}" href="#/${n[0]}">${ico(n[2], 19)}${n[1]}</a>`).join('');
   $app.innerHTML = `<div class="layout"><aside class="side" id="side"><div class="brand"><img src="assets/logo.svg" alt=""><div><b>المحطة</b><small>ADMIN</small></div></div>${items}
-    <div class="foot"><div>${esc(me.email)}</div><div style="opacity:.7">${isSuper ? 'مدير عام' : 'موظف'}</div><button id="lo">${ico('logout', 16)} خروج</button></div></aside>
+    <div class="foot"><div>${esc(me.email)}</div><div style="opacity:.7">${isSuper ? 'مدير عام' : isAdm ? 'موظف' : 'مشرف مكتب'}</div><button id="lo">${ico('logout', 16)} خروج</button></div></aside>
     <div class="scrim" id="scrim"></div>
     <main class="content"><div class="bar"><button class="menu" id="mn" aria-label="القائمة">${ico('menu', 22)}</button><h1>${esc(title)}</h1></div><div class="page">${html}</div></main></div>`;
   const side = document.getElementById('side'), scrim = document.getElementById('scrim');
@@ -377,42 +413,79 @@ async function viewSettings() {
 }
 
 /* ---------- تعريف الصفحات ---------- */
+
+/* ---------- المكاتب (الوكالات) ---------- */
+async function viewSupDash() {
+  loading();
+  const T = ['bookings', 'shipments', 'transfers', 'security_requests', 'property_requests'], L = ['حجوزات', 'إرساليات', 'تحويلات', 'موافقات أمنية', 'طلبات عقارات'];
+  const [ags, ...rs] = await Promise.all([sb.from('agencies').select('*').in('id', myAg.length ? myAg : ['00000000-0000-0000-0000-000000000000']), ...T.map(t => sb.from(t).select('id,status,handled_by').limit(1000))]);
+  const uid = me.id, A = ags.data || [];
+  const free = rs.map(r => (r.data || []).filter(x => !x.handled_by && x.status === 'pending').length);
+  const mine = rs.map(r => (r.data || []).filter(x => x.handled_by === uid && !['confirmed', 'completed', 'delivered', 'approved', 'cancelled', 'rejected'].includes(x.status)).length);
+  const card = (ic, col, v, l) => `<div class="stat"><div class="ic" style="background:${col}1A;color:${col}">${ico(ic, 24)}</div><div><b>${v}</b><span>${l}</span></div></div>`;
+  page('لوحة المكتب', `${A.map(a => `<div class="card"><div class="row between wrap"><div><h3 style="margin:0">${esc(a.name)}</h3><div class="mut">التقييم: ${Number(a.rating_avg).toFixed(1)} (${a.rating_count})</div></div><div class="row"><span class="badge ${a.is_open ? 'ok' : 'bad'}">${a.is_open ? 'مفتوح' : 'مغلق'}</span><button class="btn sm ${a.is_open ? 'red' : 'green'}" data-o="${a.id}" data-v="${a.is_open}">${a.is_open ? 'إغلاق المكتب' : 'فتح المكتب'}</button></div></div></div>`).join('') || '<div class="err">حسابك غير مرتبط بمكتب.</div>'}
+  <div class="stats">${card('bell', '#B23A48', num(free.reduce((x, y) => x + y, 0)), 'طلبات جديدة بانتظار الاستلام')}${card('badge', '#C9871A', num(mine.reduce((x, y) => x + y, 0)), 'طلباتي قيد المتابعة')}</div>
+  <div class="card"><h3>التفاصيل</h3>${T.map((t, i) => `<div class="kv"><span>${L[i]}</span><b>${num(free[i])} جديد · ${num(mine[i])} قيد المتابعة</b></div>`).join('')}</div>
+  <div class="note">استلم الطلب الجديد من صفحة الطلبات؛ أول مشرف يستلمه هو من يتابعه حتى إصدار التذكرة.</div>`);
+  document.querySelectorAll('[data-o]').forEach(b => b.onclick = async () => { const { error } = await sb.rpc('agency_set_open', { p_agency: b.dataset.o, p_open: b.dataset.v !== 'true' }); if (error) return fail(error); route(); });
+}
+async function viewSupervisors() {
+  const [ag, st] = await Promise.all([sb.from('agencies').select('id,name,section_slug').order('section_slug').order('sort'), sb.from('agency_staff').select('*').order('created_at')]);
+  agCache = ag.data || [];
+  const by = id => (st.data || []).filter(x => x.agency_id === id);
+  page('المشرفون', `<div class="card"><h3>تعيين مشرف لمكتب</h3><div class="note">لكل مكتب مشرفان (يُنصح). يجب أن يكون للمشرف حساب في التطبيق أولاً (سجّل بنفس البريد).</div><div class="fg"><div><label>بريد المشرف</label><input id="se" type="email" dir="ltr"></div><div><label>المكتب</label><select id="sa">${agCache.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div></div><div style="height:12px"></div><button class="btn" id="add">تعيين</button></div>
+  ${agCache.map(a => { const l = by(a.id); return `<div class="card"><div class="row between"><b>${esc(a.name)}</b>${l.filter(x => x.active).length === 2 ? '<span class="badge ok">مشرفان</span>' : `<span class="badge warn">${l.filter(x => x.active).length} من 2</span>`}</div>${l.map(x => `<div class="kv"><span>${esc(x.full_name || '—')}<br><small dir="ltr">${esc(x.email || '')}</small></span><b>${x.active ? '' : '<span class="badge bad">موقوف</span> '}<button class="btn ghost sm" data-t="${a.id}|${x.user_id}|${x.active}">${x.active ? 'إيقاف' : 'تفعيل'}</button> <button class="btn red sm" data-d="${a.id}|${x.user_id}">إزالة</button></b></div>`).join('') || '<div class="mut">لا يوجد مشرفون</div>'}</div>`; }).join('')}`);
+  document.getElementById('add').onclick = async () => { if (!val('se')) return toast('أدخل البريد'); const { error } = await sb.rpc('admin_add_supervisor', { p_email: val('se'), p_agency: val('sa') }); if (error) return fail(error); toast('تم التعيين'); route(); };
+  document.querySelectorAll('[data-t]').forEach(b => b.onclick = async () => { const [a, u, act] = b.dataset.t.split('|'); const { error } = await sb.from('agency_staff').update({ active: act !== 'true' }).eq('agency_id', a).eq('user_id', u); if (error) return fail(error); route(); });
+  document.querySelectorAll('[data-d]').forEach(b => b.onclick = async () => { if (!confirm('إزالة هذا المشرف من المكتب؟')) return; const [a, u] = b.dataset.d.split('|'); const { error } = await sb.from('agency_staff').delete().eq('agency_id', a).eq('user_id', u); if (error) return fail(error); route(); });
+}
+async function viewRatings() {
+  const [r, ag] = await Promise.all([sb.from('agency_ratings').select('*').order('created_at', { ascending: false }).limit(300), agencies()]);
+  page('التقييمات', `<div class="tw"><table class="tbl"><thead><tr><th>المكتب</th><th>التقييم</th><th>التعليق</th><th>التاريخ</th><th></th></tr></thead><tbody>${(r.data || []).map(x => `<tr><td>${esc(agName(x.agency_id))}</td><td style="color:#F5A623">${'★'.repeat(x.stars)}<span style="color:#ddd">${'★'.repeat(5 - x.stars)}</span></td><td>${esc(x.comment || '—')}</td><td>${dt(x.created_at)}</td><td><button class="btn red sm" data-d="${x.agency_id}|${x.user_id}">حذف</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">لا توجد تقييمات</td></tr>'}</tbody></table></div>`);
+  document.querySelectorAll('[data-d]').forEach(b => b.onclick = async () => { if (!confirm('حذف التقييم؟')) return; const [a, u] = b.dataset.d.split('|'); const { error } = await sb.from('agency_ratings').delete().eq('agency_id', a).eq('user_id', u); if (error) return fail(error); toast('تم الحذف (يُعاد حساب المتوسط عند التقييم التالي)'); route(); });
+}
+
+const agName = id => (agCache || []).find(a => a.id === id)?.name || '—';
 const OFF = n => `<td>${n}</td>`;
 const sp = (t, c) => ({ h: t, f: c });
 const PAGES = {
-  bookings: reqPage({ title: 'الحجوزات', single: 'تفاصيل الحجز', table: 'bookings', select: '*, trips(from_city,to_city,depart_at)', statuses: ['pending', 'payment_review', 'confirmed', 'cancelled'],
-    cols: [sp('رقم الحجز', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المسافر', r => esc(r.passenger_name)), sp('الرحلة', r => r.trips ? `${esc(r.trips.from_city)} ← ${esc(r.trips.to_city)}` : '—'), sp('المقاعد', r => (r.seats || []).join('، ')), sp('الإجمالي', r => num(r.total)), sp('الإثبات', r => r.payment_proof_path ? '✓' : '—'), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
+  bookings: reqPage({ title: 'الحجوزات', single: 'تفاصيل الحجز', table: 'bookings', select: '*, trips(from_city,to_city,depart_at)', statuses: ['pending', 'accepted', 'payment_review', 'confirmed', 'cancelled'],
+    cols: [sp('رقم الحجز', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المسافر', r => esc(r.passenger_name)), sp('الرحلة', r => r.trips ? `${esc(r.trips.from_city)} ← ${esc(r.trips.to_city)}` : '—'), sp('المقاعد', r => (r.seats || []).join('، ')), sp('الإجمالي', r => num(r.total)), sp('الإثبات', r => r.payment_proof_path ? '✓' : '—'), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   shipments: reqPage({ title: 'الإرساليات', single: 'تفاصيل الإرسالية', table: 'shipments', statuses: ['received', 'in_transit', 'arrived', 'delivered', 'cancelled'],
-    cols: [sp('رقم التتبع', r => `<b dir="ltr">${esc(r.tracking_no)}</b>`), sp('المرسل', r => esc(r.sender_name)), sp('المسار', r => `${esc(r.from_place)} ← ${esc(r.to_place)}`), sp('المستلم', r => esc(r.receiver_name)), sp('التكلفة', r => num(r.cost)), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
+    cols: [sp('رقم التتبع', r => `<b dir="ltr">${esc(r.tracking_no)}</b>`), sp('المرسل', r => esc(r.sender_name)), sp('المسار', r => `${esc(r.from_place)} ← ${esc(r.to_place)}`), sp('المستلم', r => esc(r.receiver_name)), sp('التكلفة', r => num(r.cost)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   transfers: reqPage({ title: 'التحويلات', single: 'تفاصيل التحويل', table: 'transfers', statuses: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
-    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('النوع', r => r.kind === 'domestic' ? 'داخلي' : 'خارجي'), sp('الدولة', r => esc(r.country)), sp('المبلغ', r => `${num(r.amount)} ${esc(r.currency)}`), sp('الرسوم', r => num(r.fee)), sp('المستلم', r => esc(r.receiver_name)), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
+    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('النوع', r => r.kind === 'domestic' ? 'داخلي' : 'خارجي'), sp('الدولة', r => esc(r.country)), sp('المبلغ', r => `${num(r.amount)} ${esc(r.currency)}`), sp('الرسوم', r => num(r.fee)), sp('المستلم', r => esc(r.receiver_name)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   security: reqPage({ title: 'الموافقات الأمنية', single: 'تفاصيل الطلب', table: 'security_requests', statuses: ['pending', 'processing', 'approved', 'rejected', 'cancelled'],
-    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('الخدمة', r => esc(r.service)), sp('مقدم الطلب', r => esc(r.full_name)), sp('الهاتف', r => esc(r.phone)), sp('المستندات', r => (r.docs || []).length), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
+    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('الخدمة', r => esc(r.service)), sp('مقدم الطلب', r => esc(r.full_name)), sp('الهاتف', r => esc(r.phone)), sp('المستندات', r => (r.docs || []).length), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   proprequests: reqPage({ title: 'طلبات العقارات', single: 'تفاصيل الطلب', table: 'property_requests', select: '*, properties(title,city)', statuses: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
-    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('العقار', r => esc(r.properties?.title || '—')), sp('النوع', r => r.kind === 'viewing' ? 'معاينة' : 'حجز'), sp('الهاتف', r => esc(r.phone)), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
+    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('العقار', r => esc(r.properties?.title || '—')), sp('النوع', r => r.kind === 'viewing' ? 'معاينة' : 'حجز'), sp('الهاتف', r => esc(r.phone)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   servicereq: reqPage({ title: 'طلبات الخدمات', single: 'تفاصيل الطلب', table: 'service_requests', statuses: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
-    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => esc(r.service_name)), sp('الهاتف', r => esc(r.phone)), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
-  trips: crudPage({ title: 'الرحلات', single: 'رحلة', table: 'trips', order: 'depart_at', asc: false,
-    fields: [{ k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
-    cols: [sp('الخط', r => `<b>${esc(r.from_city)} ← ${esc(r.to_city)}</b>`), sp('الموعد', r => dt(r.depart_at)), sp('السعر', r => num(r.price)), sp('المقاعد', r => r.seats_total), sp('النوع', r => esc(r.bus_type)), sp('متاحة', r => yn(r.active))] }),
-  properties: crudPage({ title: 'العقارات', single: 'عقار', table: 'properties',
-    fields: [{ k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'kind', l: 'النوع', t: 'select', opts: [['شقة', 'شقة'], ['فيلا', 'فيلا'], ['منزل', 'منزل'], ['أرض', 'أرض'], ['محل', 'محل'], ['مكتب', 'مكتب']] }, { k: 'listing', l: 'العرض', t: 'select', opts: [['sale', 'بيع'], ['rent', 'إيجار']] }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'city', l: 'المدينة', req: 1 }, { k: 'area', l: 'الحي' }, { k: 'rooms', l: 'الغرف', t: 'number' }, { k: 'baths', l: 'الحمامات', t: 'number' }, { k: 'size_m2', l: 'المساحة م²', t: 'number' }, { k: 'image_url', l: 'رابط الصورة (https://…)', ltr: 1, full: 1 }, { k: 'details', l: 'التفاصيل', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
-    cols: [sp('العقار', r => `<b>${esc(r.title)}</b>`), sp('النوع', r => esc(r.kind)), sp('العرض', r => r.listing === 'sale' ? 'بيع' : 'إيجار'), sp('السعر', r => num(r.price)), sp('المدينة', r => esc(r.city)), sp('ظاهر', r => yn(r.active))] }),
+    cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => esc(r.service_name)), sp('الهاتف', r => esc(r.phone)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
+  trips: crudPage({ title: 'الرحلات', single: 'رحلة', table: 'trips', scoped: 1, order: 'depart_at', asc: false,
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
+    cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الخط', r => `<b>${esc(r.from_city)} ← ${esc(r.to_city)}</b>`), sp('الموعد', r => dt(r.depart_at)), sp('السعر', r => num(r.price)), sp('المقاعد', r => r.seats_total), sp('النوع', r => esc(r.bus_type)), sp('متاحة', r => yn(r.active))] }),
+  properties: crudPage({ title: 'العقارات', single: 'عقار', table: 'properties', scoped: 1,
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'kind', l: 'النوع', t: 'select', opts: [['شقة', 'شقة'], ['فيلا', 'فيلا'], ['منزل', 'منزل'], ['أرض', 'أرض'], ['محل', 'محل'], ['مكتب', 'مكتب']] }, { k: 'listing', l: 'العرض', t: 'select', opts: [['sale', 'بيع'], ['rent', 'إيجار']] }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'city', l: 'المدينة', req: 1 }, { k: 'area', l: 'الحي' }, { k: 'rooms', l: 'الغرف', t: 'number' }, { k: 'baths', l: 'الحمامات', t: 'number' }, { k: 'size_m2', l: 'المساحة م²', t: 'number' }, { k: 'image_url', l: 'رابط الصورة (https://…)', ltr: 1, full: 1 }, { k: 'details', l: 'التفاصيل', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('العقار', r => `<b>${esc(r.title)}</b>`), sp('النوع', r => esc(r.kind)), sp('العرض', r => r.listing === 'sale' ? 'بيع' : 'إيجار'), sp('السعر', r => num(r.price)), sp('المدينة', r => esc(r.city)), sp('ظاهر', r => yn(r.active))] }),
   offices: crudPage({ title: 'المكاتب والأقسام', single: 'مكتب', table: 'offices', order: 'sort', asc: true, pk: 'slug',
     fields: [{ k: 'slug', l: 'المعرّف (إنجليزي بدون مسافات)', req: 1, ltr: 1, lock: 1 }, { k: 'name_ar', l: 'اسم المكتب', req: 1 }, { k: 'color', l: 'لون المكتب', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام فقط مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('المكتب', r => `<b>${esc(r.name_ar)}</b>`), sp('المعرّف', r => `<span dir="ltr">${esc(r.slug)}</span>`), sp('الهاتف', r => esc(r.phone || '—')), sp('ظاهر', r => yn(r.active))] }),
   services: crudPage({ title: 'الخدمات والأسعار', single: 'خدمة', table: 'services', order: 'office_slug', asc: true,
     fields: [{ k: 'office_slug', l: 'المكتب', t: 'select', opts: 'offices', req: 1 }, { k: 'name', l: 'اسم الخدمة', req: 1 }, { k: 'price_text', l: 'السعر (نص)' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهرة', t: 'bool' }],
     cols: [sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => `<b>${esc(r.name)}</b>`), sp('السعر', r => esc(r.price_text || '—')), sp('ظاهرة', r => yn(r.active))] }),
-  offers: crudPage({ title: 'العروض', single: 'عرض', table: 'offers',
-    fields: [{ k: 'title', l: 'عنوان العرض', req: 1, full: 1 }, { k: 'office_slug', l: 'المكتب', t: 'select', opts: 'offices', nullable: 1 }, { k: 'price_text', l: 'السعر / الخصم' }, { k: 'badge', l: 'شارة (مثل: عرض، جديد)' }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'popular', l: 'الأكثر طلباً (يظهر في الرئيسية)', t: 'bool', def: false }, { k: 'active', l: 'ظاهر', t: 'bool' }],
-    cols: [sp('العرض', r => `<b>${esc(r.title)}</b>`), sp('المكتب', r => esc(r.office_slug || 'عام')), sp('السعر', r => esc(r.price_text || '—')), sp('الأكثر طلباً', r => yn(r.popular)), sp('ظاهر', r => yn(r.active))] }),
+  offers: crudPage({ title: 'العروض', single: 'عرض', table: 'offers', scoped: 1,
+    fields: [{ k: 'title', l: 'عنوان العرض', req: 1, full: 1 }, { k: 'agency_id', l: 'المكتب (وكالة)', t: 'select', opts: 'agencies', nullable: 1 }, { k: 'office_slug', l: 'القسم', t: 'select', opts: 'offices', nullable: 1 }, { k: 'price_text', l: 'السعر / الخصم' }, { k: 'badge', l: 'شارة (مثل: عرض، جديد)' }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'popular', l: 'الأكثر طلباً (يظهر في الرئيسية)', t: 'bool', def: false }, { k: 'active', l: 'ظاهر', t: 'bool' }],
+    cols: [sp('العرض', r => `<b>${esc(r.title)}</b>`), sp('المكتب', r => esc(r.agency_id ? agName(r.agency_id) : (r.office_slug || 'عام'))), sp('السعر', r => esc(r.price_text || '—')), sp('الأكثر طلباً', r => yn(r.popular)), sp('ظاهر', r => yn(r.active))] }),
   banners: crudPage({ title: 'الإعلانات (بانرات الرئيسية)', single: 'إعلان', table: 'banners', order: 'sort', asc: true,
     fields: [{ k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'subtitle', l: 'النص الفرعي', full: 1 }, { k: 'color', l: 'اللون', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'link', l: 'الرابط داخل التطبيق (مثل #/trips أو #/office/hotels)', ltr: 1, full: 1 }, { k: 'active', l: 'ظاهر', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('الإعلان', r => `<b>${esc(r.title)}</b><div class="mut">${esc(r.subtitle || '')}</div>`), sp('اللون', r => `<span style="display:inline-block;width:22px;height:22px;border-radius:7px;background:${esc(r.color)};vertical-align:middle"></span>`), sp('ظاهر', r => yn(r.active))] }),
   paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true,
-    fields: [{ k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
-    cols: [sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
+    fields: [{ k: 'agency_id', l: 'المكتب (اتركه فارغاً لتكون عامة)', t: 'select', opts: 'agencies', nullable: 1 }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
+    cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
+  agencies: crudPage({ title: 'المكاتب', single: 'مكتب', table: 'agencies', order: 'sort', asc: true,
+    fields: [{ k: 'section_slug', l: 'القسم', t: 'select', opts: [['travel', 'السفر'], ['parcels', 'الإرساليات'], ['realestate', 'العقارات'], ['transfers', 'التحويلات'], ['security', 'الموافقات الأمنية']], req: 1 }, { k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'رابط الشعار (https://…)', ltr: 1, full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'is_open', l: 'مفتوح لاستقبال الطلبات', t: 'bool' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    cols: [sp('المكتب', r => `<b>${esc(r.name)}</b>`), sp('القسم', r => esc(r.section_slug)), sp('التقييم', r => `${Number(r.rating_avg).toFixed(1)} (${r.rating_count})`), sp('الهاتف', r => esc(r.phone || '—')), sp('مفتوح', r => yn(r.is_open)), sp('ظاهر', r => yn(r.active))] }),
+  supervisors: viewSupervisors, ratings: viewRatings,
   verify: () => viewVerify(), customers: viewCustomers, staff: viewStaff, rates: viewRates, reports: viewReports, settings: viewSettings
 };
 
@@ -422,15 +495,20 @@ async function route() {
   if (!me) return viewLogin();
   const parts = (location.hash || '#/').replace(/^#\/?/, '').split('/'), key = parts[0];
   if (key === 'verify' && parts[1]) { current = 'verify'; loading(); return viewVerify(decodeURIComponent(parts[1])); }
+  const SUPOK = ['', 'verify', 'bookings', 'shipments', 'transfers', 'security', 'proprequests', 'trips', 'properties', 'offers'];
+  if (!isAdm && !SUPOK.includes(key)) return go('#/');
   current = PAGES[key] || key === '' ? key : '';
   loading();
-  try { await (key === '' || !PAGES[key] ? viewDashboard() : PAGES[key]()); } catch (e) { console.error(e); page('خطأ', `<div class="err">${esc(e.message || e)}</div>`); }
+  try { await (key === '' || !PAGES[key] ? (isAdm ? viewDashboard() : viewSupDash()) : PAGES[key]()); } catch (e) { console.error(e); page('خطأ', `<div class="err">${esc(e.message || e)}</div>`); }
 }
 async function init(session) {
   if (!session) { me = null; return viewLogin(); }
-  const { data: ok, error } = await sb.rpc('is_admin');
+  const { data: ok0, error } = await sb.rpc('is_admin');
+  const { data: sv } = ok0 ? { data: false } : await sb.rpc('is_supervisor');
+  const ok = ok0 || sv; isAdm = !!ok0;
   if (error || !ok) { me = null; await sb.auth.signOut(); return viewLogin('هذا الحساب لا يملك صلاحية الدخول إلى لوحة الإدارة.'); }
-  const { data: sup } = await sb.rpc('is_super');
+  const { data: sup } = isAdm ? await sb.rpc('is_super') : { data: false };
+  const { data: mg } = await sb.rpc('my_agencies'); myAg = (mg || []).map(x => typeof x === 'object' ? Object.values(x)[0] : x);
   me = { id: session.user.id, email: session.user.email }; isSuper = !!sup;
   route();
 }
