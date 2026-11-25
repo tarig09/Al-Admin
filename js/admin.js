@@ -66,11 +66,30 @@ async function agencies() {
   if (!agCache) { const { data } = await sb.from('agencies').select('id,name,section_slug').order('section_slug').order('sort'); agCache = data || []; }
   return agCache;
 }
+const shrink = (file, max = 1280) => new Promise(res => {
+  const im = new Image(), u = URL.createObjectURL(file);
+  im.onload = () => { const k = Math.min(1, max / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u); c.toBlob(b => res(b || file), 'image/jpeg', .85); };
+  im.onerror = () => { URL.revokeObjectURL(u); res(file); };
+  im.src = u;
+});
+/* يرفع صور الحقول من نوع image إلى مخزن agency-assets داخل مجلد المكتب ويضع الرابط في الحقل */
+async function uploadImages(fields, folder) {
+  for (const f of fields.filter(x => x.t === 'image')) {
+    const fi = document.getElementById('f_' + f.k + '_file'), file = fi && fi.files[0]; if (!file) continue;
+    if (!folder) { toast('اختر المكتب أولاً قبل رفع الصورة'); return false; }
+    const blob = await shrink(file), path = `${folder}/${Date.now()}.jpg`;
+    const u = await sb.storage.from('agency-assets').upload(path, blob, { contentType: 'image/jpeg' });
+    if (u.error) { fail(u.error); return false; }
+    document.getElementById('f_' + f.k).value = sb.storage.from('agency-assets').getPublicUrl(path).data.publicUrl;
+  }
+  return true;
+}
 async function fieldHtml(f, v) {
   const id = 'f_' + f.k, val0 = v ?? f.def ?? '';
   const full = f.full || f.t === 'textarea' ? ' full' : '';
   let input;
   if (f.t === 'textarea') input = `<textarea id="${id}">${esc(val0)}</textarea>`;
+  else if (f.t === 'image') return `<div class="${full}"><label>${esc(f.l)}</label><div class="row">${v ? `<img src="${esc(v)}" alt="" style="width:64px;height:64px;border-radius:12px;object-fit:cover">` : ''}<div class="grow"><input type="file" id="${id}_file" accept="image/*"><input type="hidden" id="${id}" value="${esc(val0)}"></div></div></div>`;
   else if (f.t === 'bool') return `<div class="${full}"><label><input type="checkbox" id="${id}" ${(v ?? f.def ?? true) ? 'checked' : ''}>${esc(f.l)}</label></div>`;
   else if (f.t === 'select') {
     const opts = f.opts === 'offices' ? (await offices()).map(o => [o.slug, o.name_ar]) : f.opts === 'agencies' ? (await agencies()).map(o => [o.id, o.name]) : f.opts;
@@ -120,7 +139,14 @@ function crudPage(cfg) {
       const m = modal((edit ? 'تعديل: ' : 'إضافة: ') + cfg.single, `<div class="fg">${fh}</div><div class="act"><button class="btn" id="sv">حفظ</button>${edit && cfg.del !== false ? '<button class="btn red" id="dl">حذف</button>' : ''}</div>`);
       m.q('#sv').onclick = async e => {
         const ff = flds.map(f => edit && f.lock ? { ...f, ro: true, edit: true } : f);
-        const o = readForm(ff); if (cfg.scoped && !isAdm && !edit) o.agency_id = myAg[0]; const bad = missing(ff.filter(f => !(f.ro && f.edit)), o);
+        e.target.disabled = true;
+        const selAg = document.getElementById('f_agency_id')?.value;
+        const newId = edit ? null : (cfg.table === 'agencies' ? crypto.randomUUID() : null);
+        const folder = cfg.table === 'agencies' ? (rec?.id || newId) : (selAg || rec?.agency_id || (!isAdm ? myAg[0] : null));
+        if (!(await uploadImages(ff, folder))) { e.target.disabled = false; return; }
+        e.target.disabled = false;
+        const o = readForm(ff); if (newId) o.id = newId; if (cfg.scoped && !isAdm && !edit) o.agency_id = myAg[0];
+        if (cfg.table === 'offers') { const ag = (agCache || []).find(a => a.id === (o.agency_id || rec?.agency_id)); if (ag) o.office_slug = ag.section_slug; } const bad = missing(ff.filter(f => !(f.ro && f.edit)), o);
         if (bad) return toast('أكمل الحقل: ' + bad.l);
         e.target.disabled = true;
         const r = edit ? await sb.from(cfg.table).update(o).eq(cfg.pk || 'id', rec[cfg.pk || 'id']) : await sb.from(cfg.table).insert(o);
@@ -180,6 +206,15 @@ async function detail(cfg, r) {
       extra += `<h3 style="margin:14px 0 4px">إثبات الدفع</h3>` + (u ? (/\.pdf$/i.test(r.payment_proof_path) ? `<a class="btn ghost sm" href="${u}" target="_blank" rel="noopener">فتح ملف PDF</a>` : `<a href="${u}" target="_blank" rel="noopener"><img class="proof" src="${u}" alt="إثبات الدفع"></a>`) : '<div class="err">تعذّر تحميل الملف</div>');
     } else extra += '<div class="note">لم يرفع العميل إثبات دفع بعد.</div>';
   }
+  if (cfg.table === 'transfers') {
+    if (r.payment_proof_path) {
+      const u = await signed('payment-proofs', r.payment_proof_path);
+      extra += `<h3 style="margin:14px 0 4px">إثبات دفع العميل</h3>` + (u ? (/\.pdf$/i.test(r.payment_proof_path) ? `<a class="btn ghost sm" href="${u}" target="_blank" rel="noopener">فتح ملف PDF</a>` : `<a href="${u}" target="_blank" rel="noopener"><img class="proof" src="${u}" alt="إثبات الدفع"></a>`) : '<div class="err">تعذّر تحميل الملف</div>');
+    } else extra += '<div class="note">لم يرفع العميل إثبات الدفع بعد.</div>';
+  }
+  if (cfg.table === 'shipments') {
+    extra += `<h3 style="margin:14px 0 0">تكلفة الإرسالية</h3><div class="row"><input id="cst" type="number" step="any" value="${r.cost ?? 0}" dir="ltr"><button class="btn ghost sm" id="svc" style="white-space:nowrap">حفظ التكلفة</button></div>${Number(r.cost) === 0 ? '<div class="note">لم تُضبط تكلفة. حددها بعد الاستلام ليراها العميل.</div>' : ''}`;
+  }
   if (cfg.table === 'security_requests' && (r.docs || []).length) {
     const links = await Promise.all(r.docs.map(async (p, i) => { const u = await signed('documents', p); return u ? `<a class="btn ghost sm" href="${u}" target="_blank" rel="noopener">مستند ${i + 1}</a>` : ''; }));
     extra += `<h3 style="margin:14px 0 4px">المستندات</h3><div class="row wrap">${links.join('')}</div>`;
@@ -198,7 +233,13 @@ async function detail(cfg, r) {
     if (!['cancelled', 'confirmed'].includes(r.status)) btns += '<button class="btn red" id="no">إلغاء الحجز</button>';
     if (isAdm && r.status !== 'confirmed') btns += '<button class="btn green" id="ok">تأكيد مباشر (مدير)</button>';
   }
-  const canSet = !bk && (isAdm || r.handled_by);
+  const tr = cfg.table === 'transfers';
+  if (tr) {
+    if (r.status === 'payment_review') btns += '<button class="btn green" id="tp">بدء التنفيذ</button><button class="btn green" id="td">تم التحويل (مكتمل)</button><button class="btn ghost" id="rj">رفض الإثبات</button>';
+    if (r.status === 'processing') btns += '<button class="btn green" id="td">تم التحويل (مكتمل)</button>';
+    if (!['cancelled', 'completed', 'rejected'].includes(r.status)) btns += '<button class="btn red" id="rf">رفض الطلب</button>';
+  }
+  const canSet = !bk && (!tr || isAdm) && (isAdm || r.handled_by);
   const m = modal(cfg.single || cfg.title, `${kvs2}${kvs}${extra}${bk ? '' : `<label>تغيير الحالة</label><select id="st" ${canSet ? '' : 'disabled'}>${opts}</select>`}
     ${!isAdm && !r.handled_by && r.status !== 'cancelled' ? '<div class="note">استلم الطلب أولاً لتتمكن من متابعته.</div>' : ''}
     <div class="act">${canSet ? '<button class="btn" id="sv">حفظ الحالة</button>' : ''}${btns}${isAdm ? `<button class="btn ghost" id="nt">${ico('bell', 16)} إشعار للعميل</button>` : ''}</div>`);
@@ -212,7 +253,11 @@ async function detail(cfg, r) {
     toast('تم التحديث'); m.close(); route();
   };
   if (m.q('#sv')) m.q('#sv').onclick = () => call(val('st'));
-  if (m.q('#cl')) m.q('#cl').onclick = () => call(bk ? 'accepted' : null, true);
+  if (m.q('#cl')) m.q('#cl').onclick = () => call(bk || tr ? 'accepted' : null, true);
+  if (m.q('#tp')) m.q('#tp').onclick = () => call('processing');
+  if (m.q('#td')) m.q('#td').onclick = () => call('completed');
+  if (m.q('#rf')) m.q('#rf').onclick = () => { if (confirm('رفض الطلب؟')) call('rejected'); };
+  if (m.q('#svc')) m.q('#svc').onclick = async () => { const { error } = await sb.rpc('agency_set_cost', { p_shipment: r.id, p_cost: Number(val('cst')) }); if (error) return fail(error); toast('تم حفظ التكلفة'); m.close(); route(); };
   if (m.q('#tk')) m.q('#tk').onclick = () => call('confirmed');
   if (m.q('#rj')) m.q('#rj').onclick = () => call('accepted');
   if (m.q('#ok')) m.q('#ok').onclick = () => call('confirmed');
@@ -249,7 +294,7 @@ const NAV_SUP = [
   ['verify', 'التحقق من تذكرة', 'badge'], ['bookings', 'الحجوزات', 'bus'], ['shipments', 'الإرساليات', 'package'], ['transfers', 'التحويلات', 'banknote'],
   ['security', 'الموافقات الأمنية', 'shield'], ['proprequests', 'طلبات العقارات', 'home'],
   ['grp', 'مكتبي'],
-  ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offers', 'العروض', 'percent']
+  ['myagency', 'ملف المكتب والأسعار', 'building'], ['paymethods', 'وسائل الدفع', 'banknote'], ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offers', 'العروض', 'percent']
 ];
 let current = '';
 function page(title, html) {
@@ -257,29 +302,61 @@ function page(title, html) {
   $app.innerHTML = `<div class="layout"><aside class="side" id="side"><div class="brand"><img src="assets/logo.svg" alt=""><div><b>المحطة</b><small>ADMIN</small></div></div>${items}
     <div class="foot"><div>${esc(me.email)}</div><div style="opacity:.7">${isSuper ? 'مدير عام' : isAdm ? 'موظف' : 'مشرف مكتب'}</div><button id="lo">${ico('logout', 16)} خروج</button></div></aside>
     <div class="scrim" id="scrim"></div>
-    <main class="content"><div class="bar"><button class="menu" id="mn" aria-label="القائمة">${ico('menu', 22)}</button><h1>${esc(title)}</h1></div><div class="page">${html}</div></main></div>`;
+    <main class="content"><div class="bar"><button class="menu" id="mn" aria-label="القائمة">${ico('menu', 22)}</button><h1>${esc(title)}</h1>${isAdm ? '' : `<button class="menu" id="bl" style="display:flex" title="تعليم الإشعارات كمقروءة">${ico('bell', 20)}</button>`}</div><div class="page">${html}</div></main></div>`;
   const side = document.getElementById('side'), scrim = document.getElementById('scrim');
   document.getElementById('mn').onclick = () => { side.classList.add('open'); scrim.classList.add('open'); };
   scrim.onclick = () => { side.classList.remove('open'); scrim.classList.remove('open'); };
   side.onclick = e => { if (e.target.closest('a.it')) scrim.onclick(); };
   document.getElementById('lo').onclick = () => sb.auth.signOut();
+  const bl = document.getElementById('bl'); if (bl) bl.onclick = async () => { await sb.from('notifications').update({ read: true }).eq('read', false); seenN = new Set(); document.title = 'لوحة إدارة المحطة'; toast('تم تعليم الإشعارات كمقروءة'); };
   window.scrollTo(0, 0);
 }
 const loading = () => { $app.innerHTML = '<div class="spin">جارٍ التحميل…</div>'; };
 
 /* ---------- الدخول ---------- */
+let recovering = false;
+const digits = v => String(v || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/\D/g, '');
+const authErr = m => { m = String(m || ''); if (/rate limit|too many|seconds/i.test(m)) return 'تم تجاوز عدد الرسائل المسموح، حاول بعد قليل.'; if (/Invalid login/i.test(m)) return 'البريد أو كلمة المرور غير صحيحة.'; if (/expired|invalid/i.test(m)) return 'الرمز غير صحيح أو انتهت صلاحيته.'; if (/same password|different from the old/i.test(m)) return 'اختر كلمة مرور مختلفة عن القديمة.'; return m; };
 function viewLogin(msg) {
-  $app.innerHTML = `<div class="login"><div class="box"><div class="logo"><img src="assets/logo.svg" alt=""><h1>لوحة إدارة المحطة</h1><div class="mut">للمديرين والموظفين فقط</div></div>
-  <div id="msg">${msg ? `<div class="err">${esc(msg)}</div>` : ''}</div><label>البريد الإلكتروني</label><input id="em" type="email" dir="ltr" autocomplete="email"><label>كلمة المرور</label><input id="pw" type="password" dir="ltr" autocomplete="current-password">
-  <div style="height:16px"></div><button class="btn" id="go" style="width:100%;justify-content:center">دخول</button></div></div>`;
-  const submit = async () => {
-    const b = document.getElementById('go'); b.disabled = true;
-    const { error } = await sb.auth.signInWithPassword({ email: val('em'), password: document.getElementById('pw').value });
-    b.disabled = false;
-    if (error) document.getElementById('msg').innerHTML = `<div class="err">${/Invalid/i.test(error.message) ? 'البريد أو كلمة المرور غير صحيحة.' : esc(error.message)}</div>`;
+  let mode = 'in', email = '';
+  const draw = (notice, kind) => {
+    const emailF = `<label>البريد الإلكتروني</label><input id="em" type="email" dir="ltr" autocomplete="email" value="${esc(email)}">`;
+    const pwF = l => `<label>${l}</label><input id="pw" type="password" dir="ltr" autocomplete="${mode === 'reset' ? 'new-password' : 'current-password'}">`;
+    const body = mode === 'in' ? emailF + pwF('كلمة المرور') : mode === 'forgot' ? `<div class="note">أدخل بريدك وسنرسل رمزاً من 6 أرقام لتعيين كلمة مرور جديدة.</div>` + emailF : `<div class="note">أدخل الرمز المرسل إلى <b dir="ltr">${esc(email)}</b> ثم كلمة المرور الجديدة.</div><label>الرمز (6 أرقام)</label><input id="cd" inputmode="numeric" maxlength="6" dir="ltr" autocomplete="one-time-code" style="letter-spacing:6px;text-align:center;font-size:20px">` + pwF('كلمة المرور الجديدة');
+    $app.innerHTML = `<div class="login"><div class="box"><div class="logo"><img src="assets/logo.svg" alt=""><h1>لوحة إدارة المحطة</h1><div class="mut">للمديرين والمشرفين فقط</div></div>
+    <div id="msg">${notice ? `<div class="${kind || 'err'}">${esc(notice)}</div>` : ''}</div>${body}
+    <div style="height:16px"></div><button class="btn" id="go" style="width:100%;justify-content:center">${mode === 'in' ? 'دخول' : mode === 'forgot' ? 'إرسال الرمز' : 'تغيير كلمة المرور'}</button>
+    <div style="text-align:center;margin-top:14px"><a href="javascript:void 0" id="fg" style="color:var(--pri2);font-size:14px">${mode === 'in' ? 'نسيت كلمة المرور؟' : 'رجوع لتسجيل الدخول'}</a></div></div></div>`;
+    const say = (t, k) => { document.getElementById('msg').innerHTML = t ? `<div class="${k || 'err'}">${esc(t)}</div>` : ''; };
+    document.getElementById('fg').onclick = () => { email = val('em') || email; mode = mode === 'in' ? 'forgot' : 'in'; draw(); };
+    const submit = async () => {
+      const b = document.getElementById('go'); b.disabled = true;
+      try {
+        if (mode === 'in') {
+          const { error } = await sb.auth.signInWithPassword({ email: val('em'), password: document.getElementById('pw').value });
+          if (error) say(authErr(error.message));
+        } else if (mode === 'forgot') {
+          email = val('em'); if (!email) return say('أدخل البريد الإلكتروني.');
+          const { error } = await sb.auth.resetPasswordForEmail(email);
+          if (error) return say(authErr(error.message));
+          mode = 'reset'; draw('إن كان البريد مسجّلاً فقد أرسلنا إليه الرمز.', 'note');
+        } else {
+          const t = digits(val('cd')), pw = document.getElementById('pw').value;
+          if (t.length !== 6) return say('أدخل الرمز المكوّن من 6 أرقام.'); if (pw.length < 6) return say('كلمة المرور 6 أحرف على الأقل.');
+          recovering = true;
+          const v = await sb.auth.verifyOtp({ email, token: t, type: 'recovery' });
+          if (v.error) { recovering = false; return say(authErr(v.error.message)); }
+          const u = await sb.auth.updateUser({ password: pw });
+          recovering = false;
+          if (u.error) { await sb.auth.signOut(); return say(authErr(u.error.message)); }
+          const { data } = await sb.auth.getSession(); toast('تم تغيير كلمة المرور'); await init(data.session);
+        }
+      } finally { const g = document.getElementById('go'); if (g) g.disabled = false; }
+    };
+    document.getElementById('go').onclick = submit;
+    document.querySelectorAll('input').forEach(i => i.onkeydown = e => { if (e.key === 'Enter') submit(); });
   };
-  document.getElementById('go').onclick = submit;
-  document.getElementById('pw').onkeydown = e => { if (e.key === 'Enter') submit(); };
+  draw(msg);
 }
 
 /* ---------- لوحة التحكم ---------- */
@@ -414,6 +491,32 @@ async function viewSettings() {
 
 /* ---------- تعريف الصفحات ---------- */
 
+/* ---------- مكتبي: ملف المكتب والأسعار يعدّلها المشرف ---------- */
+async function viewMyAgency() {
+  const { data } = await sb.from('agencies').select('*').in('id', myAg.length ? myAg : ['00000000-0000-0000-0000-000000000000']);
+  const A = data || [];
+  const SEC = { travel: 'السفر', parcels: 'الإرساليات', realestate: 'العقارات', transfers: 'التحويلات', security: 'الموافقات الأمنية' };
+  page('مكتبي', A.map(a => `<div class="card"><div class="row between wrap"><div class="row">${a.logo_url ? `<img src="${esc(a.logo_url)}" alt="" style="width:56px;height:56px;border-radius:14px;object-fit:cover">` : ''}<div><h3 style="margin:0">${esc(a.name)}</h3><div class="mut">قسم ${SEC[a.section_slug] || ''}</div></div></div><button class="btn" data-e="${a.id}">تعديل ملف المكتب</button></div>
+    <div class="kv"><span>الهاتف</span><b dir="ltr">${esc(a.phone || '—')}</b></div><div class="kv"><span>واتساب</span><b dir="ltr">${esc(a.whatsapp || '—')}</b></div>
+    ${a.section_slug === 'parcels' ? `<div class="kv"><span>أجرة الإرسالية</span><b>${a.ship_base != null ? num(a.ship_base) + ' + ' + num(a.ship_per_kg || 0) + ' لكل كجم' : 'غير محددة (تحدد التكلفة لكل إرسالية)'}</b></div>` : ''}
+    ${a.section_slug === 'transfers' ? `<div class="kv"><span>رسوم التحويل</span><b>${a.transfer_pct != null || a.transfer_min != null ? (a.transfer_pct ?? 0) + '% بحد أدنى ' + num(a.transfer_min || 0) : 'بدون رسوم'}</b></div>` : ''}</div>`).join('') || '<div class="err">حسابك غير مرتبط بمكتب.</div>');
+  document.querySelectorAll('[data-e]').forEach(b => b.onclick = async () => {
+    const a = A.find(x => x.id === b.dataset.e);
+    const F = [{ k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }];
+    if (a.section_slug === 'parcels') F.push({ k: 'ship_base', l: 'أجرة الإرسالية الثابتة (ج.س)', t: 'number' }, { k: 'ship_per_kg', l: 'السعر لكل كجم', t: 'number' });
+    if (a.section_slug === 'transfers') F.push({ k: 'transfer_pct', l: 'نسبة رسوم التحويل %', t: 'number' }, { k: 'transfer_min', l: 'أدنى رسوم (ج.س)', t: 'number' });
+    const fh = (await Promise.all(F.map(f => fieldHtml(f, a[f.k])))).join('');
+    const m = modal('ملف المكتب', `<div class="fg">${fh}</div><div class="act"><button class="btn" id="sv">حفظ</button></div>`);
+    m.q('#sv').onclick = async e => {
+      e.target.disabled = true;
+      if (!(await uploadImages(F, a.id))) { e.target.disabled = false; return; }
+      const o = readForm(F); if (!o.name) { e.target.disabled = false; return toast('اسم المكتب مطلوب'); }
+      const { error } = await sb.rpc('agency_update_profile', { p_agency: a.id, p_name: o.name, p_logo: o.logo_url, p_desc: o.description, p_phone: o.phone, p_whatsapp: o.whatsapp, p_ship_base: o.ship_base ?? null, p_ship_per_kg: o.ship_per_kg ?? null, p_transfer_pct: o.transfer_pct ?? null, p_transfer_min: o.transfer_min ?? null });
+      e.target.disabled = false; if (error) return fail(error); agCache = null; toast('تم الحفظ'); m.close(); route();
+    };
+  });
+}
+
 /* ---------- المكاتب (الوكالات) ---------- */
 async function viewSupDash() {
   loading();
@@ -453,7 +556,7 @@ const PAGES = {
     cols: [sp('رقم الحجز', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المسافر', r => esc(r.passenger_name)), sp('الرحلة', r => r.trips ? `${esc(r.trips.from_city)} ← ${esc(r.trips.to_city)}` : '—'), sp('المقاعد', r => (r.seats || []).join('، ')), sp('الإجمالي', r => num(r.total)), sp('الإثبات', r => r.payment_proof_path ? '✓' : '—'), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   shipments: reqPage({ title: 'الإرساليات', single: 'تفاصيل الإرسالية', table: 'shipments', statuses: ['received', 'in_transit', 'arrived', 'delivered', 'cancelled'],
     cols: [sp('رقم التتبع', r => `<b dir="ltr">${esc(r.tracking_no)}</b>`), sp('المرسل', r => esc(r.sender_name)), sp('المسار', r => `${esc(r.from_place)} ← ${esc(r.to_place)}`), sp('المستلم', r => esc(r.receiver_name)), sp('التكلفة', r => num(r.cost)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
-  transfers: reqPage({ title: 'التحويلات', single: 'تفاصيل التحويل', table: 'transfers', statuses: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
+  transfers: reqPage({ title: 'التحويلات', single: 'تفاصيل التحويل', table: 'transfers', statuses: ['pending', 'accepted', 'payment_review', 'processing', 'completed', 'rejected', 'cancelled'],
     cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('النوع', r => r.kind === 'domestic' ? 'داخلي' : 'خارجي'), sp('الدولة', r => esc(r.country)), sp('المبلغ', r => `${num(r.amount)} ${esc(r.currency)}`), sp('الرسوم', r => num(r.fee)), sp('المستلم', r => esc(r.receiver_name)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   security: reqPage({ title: 'الموافقات الأمنية', single: 'تفاصيل الطلب', table: 'security_requests', statuses: ['pending', 'processing', 'approved', 'rejected', 'cancelled'],
     cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('الخدمة', r => esc(r.service)), sp('مقدم الطلب', r => esc(r.full_name)), sp('الهاتف', r => esc(r.phone)), sp('المستندات', r => (r.docs || []).length), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
@@ -465,7 +568,7 @@ const PAGES = {
     fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الخط', r => `<b>${esc(r.from_city)} ← ${esc(r.to_city)}</b>`), sp('الموعد', r => dt(r.depart_at)), sp('السعر', r => num(r.price)), sp('المقاعد', r => r.seats_total), sp('النوع', r => esc(r.bus_type)), sp('متاحة', r => yn(r.active))] }),
   properties: crudPage({ title: 'العقارات', single: 'عقار', table: 'properties', scoped: 1,
-    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'kind', l: 'النوع', t: 'select', opts: [['شقة', 'شقة'], ['فيلا', 'فيلا'], ['منزل', 'منزل'], ['أرض', 'أرض'], ['محل', 'محل'], ['مكتب', 'مكتب']] }, { k: 'listing', l: 'العرض', t: 'select', opts: [['sale', 'بيع'], ['rent', 'إيجار']] }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'city', l: 'المدينة', req: 1 }, { k: 'area', l: 'الحي' }, { k: 'rooms', l: 'الغرف', t: 'number' }, { k: 'baths', l: 'الحمامات', t: 'number' }, { k: 'size_m2', l: 'المساحة م²', t: 'number' }, { k: 'image_url', l: 'رابط الصورة (https://…)', ltr: 1, full: 1 }, { k: 'details', l: 'التفاصيل', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'kind', l: 'النوع', t: 'select', opts: [['شقة', 'شقة'], ['فيلا', 'فيلا'], ['منزل', 'منزل'], ['أرض', 'أرض'], ['محل', 'محل'], ['مكتب', 'مكتب']] }, { k: 'listing', l: 'العرض', t: 'select', opts: [['sale', 'بيع'], ['rent', 'إيجار']] }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'city', l: 'المدينة', req: 1 }, { k: 'area', l: 'الحي' }, { k: 'rooms', l: 'الغرف', t: 'number' }, { k: 'baths', l: 'الحمامات', t: 'number' }, { k: 'size_m2', l: 'المساحة م²', t: 'number' }, { k: 'image_url', l: 'صورة العقار', t: 'image', full: 1 }, { k: 'details', l: 'التفاصيل', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('العقار', r => `<b>${esc(r.title)}</b>`), sp('النوع', r => esc(r.kind)), sp('العرض', r => r.listing === 'sale' ? 'بيع' : 'إيجار'), sp('السعر', r => num(r.price)), sp('المدينة', r => esc(r.city)), sp('ظاهر', r => yn(r.active))] }),
   offices: crudPage({ title: 'المكاتب والأقسام', single: 'مكتب', table: 'offices', order: 'sort', asc: true, pk: 'slug',
     fields: [{ k: 'slug', l: 'المعرّف (إنجليزي بدون مسافات)', req: 1, ltr: 1, lock: 1 }, { k: 'name_ar', l: 'اسم المكتب', req: 1 }, { k: 'color', l: 'لون المكتب', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام فقط مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
@@ -474,18 +577,18 @@ const PAGES = {
     fields: [{ k: 'office_slug', l: 'المكتب', t: 'select', opts: 'offices', req: 1 }, { k: 'name', l: 'اسم الخدمة', req: 1 }, { k: 'price_text', l: 'السعر (نص)' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهرة', t: 'bool' }],
     cols: [sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => `<b>${esc(r.name)}</b>`), sp('السعر', r => esc(r.price_text || '—')), sp('ظاهرة', r => yn(r.active))] }),
   offers: crudPage({ title: 'العروض', single: 'عرض', table: 'offers', scoped: 1,
-    fields: [{ k: 'title', l: 'عنوان العرض', req: 1, full: 1 }, { k: 'agency_id', l: 'المكتب (وكالة)', t: 'select', opts: 'agencies', nullable: 1 }, { k: 'office_slug', l: 'القسم', t: 'select', opts: 'offices', nullable: 1 }, { k: 'price_text', l: 'السعر / الخصم' }, { k: 'badge', l: 'شارة (مثل: عرض، جديد)' }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'popular', l: 'الأكثر طلباً (يظهر في الرئيسية)', t: 'bool', def: false }, { k: 'active', l: 'ظاهر', t: 'bool' }],
-    cols: [sp('العرض', r => `<b>${esc(r.title)}</b>`), sp('المكتب', r => esc(r.agency_id ? agName(r.agency_id) : (r.office_slug || 'عام'))), sp('السعر', r => esc(r.price_text || '—')), sp('الأكثر طلباً', r => yn(r.popular)), sp('ظاهر', r => yn(r.active))] }),
+    fields: [{ k: 'title', l: 'عنوان العرض', req: 1, full: 1 }, { k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'price_text', l: 'السعر / الخصم' }, { k: 'badge', l: 'شارة (مثل: عرض، جديد)' }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر', t: 'bool' }],
+    cols: [sp('العرض', r => `<b>${esc(r.title)}</b>`), sp('المكتب', r => esc(agName(r.agency_id))), sp('السعر', r => esc(r.price_text || '—')), sp('ظاهر', r => yn(r.active))] }),
   banners: crudPage({ title: 'الإعلانات (بانرات الرئيسية)', single: 'إعلان', table: 'banners', order: 'sort', asc: true,
     fields: [{ k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'subtitle', l: 'النص الفرعي', full: 1 }, { k: 'color', l: 'اللون', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'link', l: 'الرابط داخل التطبيق (مثل #/trips أو #/office/hotels)', ltr: 1, full: 1 }, { k: 'active', l: 'ظاهر', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('الإعلان', r => `<b>${esc(r.title)}</b><div class="mut">${esc(r.subtitle || '')}</div>`), sp('اللون', r => `<span style="display:inline-block;width:22px;height:22px;border-radius:7px;background:${esc(r.color)};vertical-align:middle"></span>`), sp('ظاهر', r => yn(r.active))] }),
-  paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true,
-    fields: [{ k: 'agency_id', l: 'المكتب (اتركه فارغاً لتكون عامة)', t: 'select', opts: 'agencies', nullable: 1 }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
+  paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true, scoped: 1,
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
   agencies: crudPage({ title: 'المكاتب', single: 'مكتب', table: 'agencies', order: 'sort', asc: true,
-    fields: [{ k: 'section_slug', l: 'القسم', t: 'select', opts: [['travel', 'السفر'], ['parcels', 'الإرساليات'], ['realestate', 'العقارات'], ['transfers', 'التحويلات'], ['security', 'الموافقات الأمنية']], req: 1 }, { k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'رابط الشعار (https://…)', ltr: 1, full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'is_open', l: 'مفتوح لاستقبال الطلبات', t: 'bool' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    fields: [{ k: 'section_slug', l: 'القسم', t: 'select', opts: [['travel', 'السفر'], ['parcels', 'الإرساليات'], ['realestate', 'العقارات'], ['transfers', 'التحويلات'], ['security', 'الموافقات الأمنية']], req: 1 }, { k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'ship_base', l: 'إرساليات: الأجرة الثابتة (ج.س)', t: 'number' }, { k: 'ship_per_kg', l: 'إرساليات: لكل كجم', t: 'number' }, { k: 'transfer_pct', l: 'تحويلات: نسبة الرسوم %', t: 'number' }, { k: 'transfer_min', l: 'تحويلات: أدنى رسوم', t: 'number' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'is_open', l: 'مفتوح لاستقبال الطلبات', t: 'bool' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('المكتب', r => `<b>${esc(r.name)}</b>`), sp('القسم', r => esc(r.section_slug)), sp('التقييم', r => `${Number(r.rating_avg).toFixed(1)} (${r.rating_count})`), sp('الهاتف', r => esc(r.phone || '—')), sp('مفتوح', r => yn(r.is_open)), sp('ظاهر', r => yn(r.active))] }),
-  supervisors: viewSupervisors, ratings: viewRatings,
+  supervisors: viewSupervisors, ratings: viewRatings, myagency: viewMyAgency,
   verify: () => viewVerify(), customers: viewCustomers, staff: viewStaff, rates: viewRates, reports: viewReports, settings: viewSettings
 };
 
@@ -495,7 +598,7 @@ async function route() {
   if (!me) return viewLogin();
   const parts = (location.hash || '#/').replace(/^#\/?/, '').split('/'), key = parts[0];
   if (key === 'verify' && parts[1]) { current = 'verify'; loading(); return viewVerify(decodeURIComponent(parts[1])); }
-  const SUPOK = ['', 'verify', 'bookings', 'shipments', 'transfers', 'security', 'proprequests', 'trips', 'properties', 'offers'];
+  const SUPOK = ['', 'myagency', 'paymethods', 'verify', 'bookings', 'shipments', 'transfers', 'security', 'proprequests', 'trips', 'properties', 'offers'];
   if (!isAdm && !SUPOK.includes(key)) return go('#/');
   current = PAGES[key] || key === '' ? key : '';
   loading();
@@ -510,13 +613,35 @@ async function init(session) {
   const { data: sup } = isAdm ? await sb.rpc('is_super') : { data: false };
   const { data: mg } = await sb.rpc('my_agencies'); myAg = (mg || []).map(x => typeof x === 'object' ? Object.values(x)[0] : x);
   me = { id: session.user.id, email: session.user.email }; isSuper = !!sup;
+  if (!isAdm) startWatch();
   route();
+}
+/* تنبيه المشرف بالطلبات الجديدة: فحص كل 20 ثانية، نغمة + إشعار المتصفح + عدّاد في عنوان التبويب */
+let watchTimer = null, seenN = new Set(), firstWatch = true;
+function beep() { try { const c = new (window.AudioContext || window.webkitAudioContext)(), o = c.createOscillator(), g = c.createGain(); o.connect(g); g.connect(c.destination); o.type = 'sine'; o.frequency.value = 880; g.gain.setValueAtTime(.2, c.currentTime); g.gain.exponentialRampToValueAtTime(.001, c.currentTime + .6); o.start(); o.stop(c.currentTime + .6); } catch (_) {} }
+function startWatch() {
+  clearInterval(watchTimer); seenN = new Set(); firstWatch = true;
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (_) {}
+  const tick = async () => {
+    if (!me) return;
+    const { data } = await sb.from('notifications').select('id,title,body').eq('read', false).order('created_at', { ascending: false }).limit(30);
+    const rows = data || [], fresh = rows.filter(x => !seenN.has(x.id));
+    rows.forEach(x => seenN.add(x.id));
+    document.title = (rows.length ? `(${rows.length}) ` : '') + 'لوحة إدارة المحطة';
+    if (!firstWatch && fresh.length) {
+      beep(); toast(fresh[0].title + (fresh.length > 1 ? ` (+${fresh.length - 1})` : ''));
+      try { if ('Notification' in window && Notification.permission === 'granted') new Notification(fresh[0].title, { body: fresh[0].body || '' }); } catch (_) {}
+      if (['', 'bookings', 'shipments', 'transfers', 'security', 'proprequests'].includes(current) && !document.querySelector('.mod')) route();
+    }
+    firstWatch = false;
+  };
+  tick(); watchTimer = setInterval(tick, 20000);
 }
 async function boot() {
   window.addEventListener('hashchange', route);
   if (!sb) return route();
   const { data } = await sb.auth.getSession(); await init(data.session);
-  sb.auth.onAuthStateChange((ev, s) => { if (ev === 'SIGNED_IN' && !me) init(s); if (ev === 'SIGNED_OUT') { me = null; setTimeout(() => { if (!document.querySelector('#msg .err')) viewLogin(); }, 80); } });
+  sb.auth.onAuthStateChange((ev, s) => { if (recovering) return; if (ev === 'SIGNED_IN' && !me) init(s); if (ev === 'SIGNED_OUT') { me = null; clearInterval(watchTimer); setTimeout(() => { if (!document.querySelector('#msg .err')) viewLogin(); }, 80); } });
 }
 boot();
 })();
