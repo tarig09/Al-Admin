@@ -14,7 +14,7 @@ const val = id => (document.getElementById(id)?.value ?? '').trim();
 const go = h => { location.hash = h; };
 const ST = {pending:['بانتظار التأكيد','warn'],accepted:['مقبول — بانتظار الدفع','info'],payment_review:['مراجعة الدفع','info'],confirmed:['مؤكد','ok'],cancelled:['ملغي','bad'],received:['تم الاستلام','info'],in_transit:['في الطريق','warn'],arrived:['وصلت للوجهة','info'],delivered:['تم التسليم','ok'],processing:['قيد التنفيذ','warn'],completed:['مكتمل','ok'],approved:['تمت الموافقة','ok'],rejected:['مرفوض','bad']};
 const badge = s => `<span class="badge ${(ST[s]||[s,''])[1]}">${(ST[s]||[s])[0]}</span>`;
-const fail = e => { console.error(e); toast(({forbidden:'لا تملك الصلاحية لهذا الإجراء.',user_not_found:'لا يوجد حساب بهذا البريد في التطبيق.',already_taken:'استلم مشرف آخر هذا الطلب.',not_handler:'يجب أن تستلم الطلب أولاً (أو استلمه مشرف آخر).',bad_transition:'هذا التغيير غير مسموح في الحالة الحالية.',not_found:'السجل غير موجود.'}[e?.message]) || e?.message || 'حدث خطأ'); };
+const fail = e => { console.error(e); toast(({forbidden:'لا تملك الصلاحية لهذا الإجراء.',user_not_found:'لا يوجد حساب بهذا البريد في التطبيق.',already_taken:'استلم مشرف آخر هذا الطلب.',not_handler:'يجب أن تستلم الطلب أولاً (أو استلمه مشرف آخر).',bad_transition:'هذا التغيير غير مسموح في الحالة الحالية.',not_found:'السجل غير موجود.',seats_in_use:'لا يمكن تقليل المقاعد إلى أقل من أعلى مقعد محجوز في هذه الرحلة.',title_required:'اكتب عنوان الإشعار.'}[e?.message]) || e?.message || 'حدث خطأ'); };
 const tz = iso => { if (!iso) return ''; const d = new Date(iso), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 
 const IC = {
@@ -46,6 +46,43 @@ const IC = {
 const ico = (n, s = 20, w = 1.8) => `<svg class="svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || IC.file}</svg>`;
 
 /* ---------- نافذة منبثقة ---------- */
+
+/* ---------- اختيار موقع على الخريطة (Leaflet + OpenStreetMap) ---------- */
+let leafletP = null;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve();
+  if (leafletP) return leafletP;
+  leafletP = new Promise((ok, no) => {
+    const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css'; document.head.appendChild(l);
+    const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js'; sc.onload = ok; sc.onerror = () => { leafletP = null; no(); }; document.head.appendChild(sc);
+  });
+  return leafletP;
+}
+/* root: عنصر يحتوي حقلي lat/lng ؛ ids: [latId, lngId] */
+function wireMapPicker(root, latId, lngId) {
+  const btn = root.querySelector('[data-pick]'), host = root.querySelector('[data-mapbox]'); if (!btn || !host) return;
+  const la = root.querySelector('#' + latId), ln = root.querySelector('#' + lngId);
+  let map = null, mk = null;
+  const setPt = (lat, lng) => { la.value = lat.toFixed(6); ln.value = lng.toFixed(6); if (mk) mk.setLatLng([lat, lng]); else mk = L.marker([lat, lng]).addTo(map); };
+  btn.onclick = async () => {
+    if (host.style.display === 'block') { host.style.display = 'none'; return; }
+    host.style.display = 'block'; host.textContent = 'جارٍ تحميل الخريطة…';
+    try { await loadLeaflet(); } catch (_) { host.textContent = 'تعذّر تحميل الخريطة. أدخل الإحداثيات يدوياً.'; return; }
+    host.textContent = '';
+    const has = la.value !== '' && ln.value !== '', c = has ? [Number(la.value), Number(ln.value)] : [15.5, 32.55];
+    if (map) { map.remove(); map = null; mk = null; }
+    map = L.map(host).setView(c, has ? 11 : 6);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+    if (has) mk = L.marker(c).addTo(map);
+    map.on('click', e => setPt(e.latlng.lat, e.latlng.lng));
+    setTimeout(() => map.invalidateSize(), 150);
+  };
+  const me = root.querySelector('[data-here]'); if (me) me.onclick = () => {
+    if (!navigator.geolocation) return toast('المتصفح لا يدعم تحديد الموقع');
+    navigator.geolocation.getCurrentPosition(p => { la.value = p.coords.latitude.toFixed(6); ln.value = p.coords.longitude.toFixed(6); if (map) { map.setView([p.coords.latitude, p.coords.longitude], 12); setPt(p.coords.latitude, p.coords.longitude); } toast('تم أخذ موقعك الحالي'); }, () => toast('لم يُسمح بتحديد الموقع'), { enableHighAccuracy: true, timeout: 15000 });
+  };
+}
+const mapControls = `<div class="row" style="gap:8px;margin-top:8px"><button type="button" class="btn ghost sm" data-pick>اختيار من الخريطة</button><button type="button" class="btn ghost sm" data-here>موقعي الحالي</button></div><div data-mapbox style="display:none;height:260px;border-radius:12px;margin-top:8px;overflow:hidden"></div>`;
 function modal(title, html) {
   const m = document.createElement('div'); m.className = 'mod';
   m.innerHTML = `<div class="box"><div class="hd"><h2>${esc(title)}</h2><button class="x" aria-label="إغلاق">${ico('x', 18)}</button></div><div class="mb">${html}</div></div>`;
@@ -90,6 +127,7 @@ async function fieldHtml(f, v) {
   let input;
   if (f.t === 'textarea') input = `<textarea id="${id}">${esc(val0)}</textarea>`;
   else if (f.t === 'image') return `<div class="${full}"><label>${esc(f.l)}</label><div class="row">${v ? `<img src="${esc(v)}" alt="" style="width:64px;height:64px;border-radius:12px;object-fit:cover">` : ''}<div class="grow"><input type="file" id="${id}_file" accept="image/*"><input type="hidden" id="${id}" value="${esc(val0)}"></div></div></div>`;
+  else if (f.t === 'mapbtn') return `<div class="full" data-mapwrap>${mapControls}</div>`;
   else if (f.t === 'bool') return `<div class="${full}"><label><input type="checkbox" id="${id}" ${(v ?? f.def ?? true) ? 'checked' : ''}>${esc(f.l)}</label></div>`;
   else if (f.t === 'select') {
     const opts = f.opts === 'offices' ? (await offices()).map(o => [o.slug, o.name_ar]) : f.opts === 'agencies' ? (await agencies()).map(o => [o.id, o.name]) : f.opts;
@@ -137,6 +175,7 @@ function crudPage(cfg) {
       const flds = cfg.fields.filter(f => !(f.k === 'agency_id' && !isAdm));
       const fh = (await Promise.all(flds.map(f => fieldHtml(edit && f.lock ? { ...f, ro: true } : f, rec?.[f.k])))).join('');
       const m = modal((edit ? 'تعديل: ' : 'إضافة: ') + cfg.single, `<div class="fg">${fh}</div><div class="act"><button class="btn" id="sv">حفظ</button>${edit && cfg.del !== false ? '<button class="btn red" id="dl">حذف</button>' : ''}</div>`);
+      if (m.q('[data-mapwrap]')) wireMapPicker(m.q('.mb'), 'f_lat', 'f_lng');
       m.q('#sv').onclick = async e => {
         const ff = flds.map(f => edit && f.lock ? { ...f, ro: true, edit: true } : f);
         e.target.disabled = true;
@@ -220,7 +259,7 @@ async function detail(cfg, r) {
     extra += `<h3 style="margin:14px 0 4px">المستندات</h3><div class="row wrap">${links.join('')}</div>`;
   }
   if (cfg.table === 'shipments') {
-    extra += `<h3 style="margin:14px 0 0">موقع الإرسالية على الخريطة</h3><div class="fg"><div><label>خط العرض (lat)</label><input id="lat" type="number" step="any" value="${r.lat ?? ''}" dir="ltr"></div><div><label>خط الطول (lng)</label><input id="lng" type="number" step="any" value="${r.lng ?? ''}" dir="ltr"></div></div>`;
+    extra += `<h3 style="margin:14px 0 0">موقع الإرسالية على الخريطة</h3><div class="fg"><div><label>خط العرض (lat)</label><input id="lat" type="number" step="any" value="${r.lat ?? ''}" dir="ltr"></div><div><label>خط الطول (lng)</label><input id="lng" type="number" step="any" value="${r.lng ?? ''}" dir="ltr"></div></div><div id="shmap">${mapControls}</div>`;
   }
   const kvs2 = `<div class="kv"><span>المكتب</span><b>${esc(r.agencies?.name || '—')}</b></div><div class="kv"><span>المشرف المتابع</span><b>${esc(r.handler_name || 'لم يُستلم بعد')}${r.handler_phone ? `<br><small class="mut" dir="ltr">${esc(r.handler_phone)}</small>` : ''}</b></div>`;
   const opts = cfg.statuses.map(s => `<option value="${s}" ${s === r.status ? 'selected' : ''}>${ST[s][0]}</option>`).join('');
@@ -257,6 +296,7 @@ async function detail(cfg, r) {
   if (m.q('#tp')) m.q('#tp').onclick = () => call('processing');
   if (m.q('#td')) m.q('#td').onclick = () => call('completed');
   if (m.q('#rf')) m.q('#rf').onclick = () => { if (confirm('رفض الطلب؟')) call('rejected'); };
+  if (m.q('#shmap')) wireMapPicker(m.q('.mb'), 'lat', 'lng');
   if (m.q('#svc')) m.q('#svc').onclick = async () => { const { error } = await sb.rpc('agency_set_cost', { p_shipment: r.id, p_cost: Number(val('cst')) }); if (error) return fail(error); toast('تم حفظ التكلفة'); m.close(); route(); };
   if (m.q('#tk')) m.q('#tk').onclick = () => call('confirmed');
   if (m.q('#rj')) m.q('#rj').onclick = () => call('accepted');
@@ -286,7 +326,7 @@ const NAV_ADMIN = [
   ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'الأقسام', 'list'],
   ['services', 'الخدمات والأسعار', 'tag'], ['offers', 'العروض', 'percent'], ['banners', 'الإعلانات', 'megaphone'],
   ['grp', 'الإدارة'],
-  ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
+  ['broadcast', 'نشر إشعار للجميع', 'megaphone'], ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
 ];
 const NAV_SUP = [
   ['', 'لوحة المكتب', 'chart', 'home'],
@@ -548,7 +588,7 @@ async function viewRatings() {
   document.querySelectorAll('[data-d]').forEach(b => b.onclick = async () => { if (!confirm('حذف التقييم؟')) return; const [a, u] = b.dataset.d.split('|'); const { error } = await sb.from('agency_ratings').delete().eq('agency_id', a).eq('user_id', u); if (error) return fail(error); toast('تم الحذف (يُعاد حساب المتوسط عند التقييم التالي)'); route(); });
 }
 
-const agName = id => (agCache || []).find(a => a.id === id)?.name || '—';
+const agName = id => id ? ((agCache || []).find(a => a.id === id)?.name || '—') : 'عام (أقسام مباشرة)';
 const OFF = n => `<td>${n}</td>`;
 const sp = (t, c) => ({ h: t, f: c });
 const PAGES = {
@@ -565,14 +605,14 @@ const PAGES = {
   servicereq: reqPage({ title: 'طلبات الخدمات', single: 'تفاصيل الطلب', table: 'service_requests', statuses: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
     cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => esc(r.service_name)), sp('الهاتف', r => esc(r.phone)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   trips: crudPage({ title: 'الرحلات', single: 'رحلة', table: 'trips', scoped: 1, order: 'depart_at', asc: false,
-    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد (1–100، يمكن زيادته أو تقليله)', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'lat', l: 'موقع الباص الحالي: خط العرض', t: 'number', ltr: 1 }, { k: 'lng', l: 'موقع الباص الحالي: خط الطول', t: 'number', ltr: 1 }, { k: '_map', t: 'mapbtn', full: 1 }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الخط', r => `<b>${esc(r.from_city)} ← ${esc(r.to_city)}</b>`), sp('الموعد', r => dt(r.depart_at)), sp('السعر', r => num(r.price)), sp('المقاعد', r => r.seats_total), sp('النوع', r => esc(r.bus_type)), sp('متاحة', r => yn(r.active))] }),
   properties: crudPage({ title: 'العقارات', single: 'عقار', table: 'properties', scoped: 1,
     fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'kind', l: 'النوع', t: 'select', opts: [['شقة', 'شقة'], ['فيلا', 'فيلا'], ['منزل', 'منزل'], ['أرض', 'أرض'], ['محل', 'محل'], ['مكتب', 'مكتب']] }, { k: 'listing', l: 'العرض', t: 'select', opts: [['sale', 'بيع'], ['rent', 'إيجار']] }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'city', l: 'المدينة', req: 1 }, { k: 'area', l: 'الحي' }, { k: 'rooms', l: 'الغرف', t: 'number' }, { k: 'baths', l: 'الحمامات', t: 'number' }, { k: 'size_m2', l: 'المساحة م²', t: 'number' }, { k: 'image_url', l: 'صورة العقار', t: 'image', full: 1 }, { k: 'details', l: 'التفاصيل', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('العقار', r => `<b>${esc(r.title)}</b>`), sp('النوع', r => esc(r.kind)), sp('العرض', r => r.listing === 'sale' ? 'بيع' : 'إيجار'), sp('السعر', r => num(r.price)), sp('المدينة', r => esc(r.city)), sp('ظاهر', r => yn(r.active))] }),
   offices: crudPage({ title: 'المكاتب والأقسام', single: 'مكتب', table: 'offices', order: 'sort', asc: true, pk: 'slug',
-    fields: [{ k: 'slug', l: 'المعرّف (إنجليزي بدون مسافات)', req: 1, ltr: 1, lock: 1 }, { k: 'name_ar', l: 'اسم المكتب', req: 1 }, { k: 'color', l: 'لون المكتب', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام فقط مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
-    cols: [sp('الترتيب', r => r.sort), sp('المكتب', r => `<b>${esc(r.name_ar)}</b>`), sp('المعرّف', r => `<span dir="ltr">${esc(r.slug)}</span>`), sp('الهاتف', r => esc(r.phone || '—')), sp('ظاهر', r => yn(r.active))] }),
+    fields: [{ k: 'slug', l: 'المعرّف (إنجليزي بدون مسافات)', req: 1, ltr: 1, lock: 1 }, { k: 'name_ar', l: 'اسم المكتب', req: 1 }, { k: 'color', l: 'لون المكتب', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام فقط مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'use_agencies', l: 'تفعيل نظام المكاتب والمشرفين في هذا القسم (إن لم يُفعَّل يعمل القسم مباشرة وتتابعه الإدارة)', t: 'bool', def: false, full: 1 }, { k: 'ship_base', l: 'أجرة الإرسالية الأساسية (للقسم المباشر)', t: 'number' }, { k: 'ship_per_kg', l: 'سعر الكيلو الإضافي', t: 'number' }, { k: 'transfer_pct', l: 'نسبة رسوم التحويل %', t: 'number' }, { k: 'transfer_min', l: 'أدنى رسوم تحويل', t: 'number' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    cols: [sp('الترتيب', r => r.sort), sp('المكتب', r => `<b>${esc(r.name_ar)}</b>`), sp('نظام المكاتب', r => yn(r.use_agencies)), sp('المعرّف', r => `<span dir="ltr">${esc(r.slug)}</span>`), sp('الهاتف', r => esc(r.phone || '—')), sp('ظاهر', r => yn(r.active))] }),
   services: crudPage({ title: 'الخدمات والأسعار', single: 'خدمة', table: 'services', order: 'office_slug', asc: true,
     fields: [{ k: 'office_slug', l: 'المكتب', t: 'select', opts: 'offices', req: 1 }, { k: 'name', l: 'اسم الخدمة', req: 1 }, { k: 'price_text', l: 'السعر (نص)' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهرة', t: 'bool' }],
     cols: [sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => `<b>${esc(r.name)}</b>`), sp('السعر', r => esc(r.price_text || '—')), sp('ظاهرة', r => yn(r.active))] }),
@@ -582,8 +622,24 @@ const PAGES = {
   banners: crudPage({ title: 'الإعلانات (بانرات الرئيسية)', single: 'إعلان', table: 'banners', order: 'sort', asc: true,
     fields: [{ k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'subtitle', l: 'النص الفرعي', full: 1 }, { k: 'color', l: 'اللون', t: 'color' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'link', l: 'الرابط داخل التطبيق (مثل #/trips أو #/office/hotels)', ltr: 1, full: 1 }, { k: 'active', l: 'ظاهر', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('الإعلان', r => `<b>${esc(r.title)}</b><div class="mut">${esc(r.subtitle || '')}</div>`), sp('اللون', r => `<span style="display:inline-block;width:22px;height:22px;border-radius:7px;background:${esc(r.color)};vertical-align:middle"></span>`), sp('ظاهر', r => yn(r.active))] }),
+  broadcast: async () => {
+    const { data: hist } = await sb.from('broadcasts').select('*').order('created_at', { ascending: false }).limit(30);
+    page('نشر إشعار للجميع', `<div class="card"><p class="mut" style="margin-top:0">يصل الإشعار إلى كل مستخدمي التطبيق داخل تبويب «الإشعارات»، ومع تنبيه على الهاتف إن فُعِّلت خدمة الإشعارات الفورية.</p>
+      <div class="fg"><div class="full"><label>عنوان الإشعار *</label><input id="bt" maxlength="80"></div><div class="full"><label>النص</label><textarea id="bb" maxlength="400"></textarea></div></div>
+      <div class="act"><button class="btn" id="bs">${ico('megaphone', 18)} نشر الآن</button></div></div>
+      <h3 style="margin:18px 0 8px">الإشعارات المنشورة</h3><div class="tw"><table class="tbl"><thead><tr><th>العنوان</th><th>النص</th><th>المستلمون</th><th>التاريخ</th></tr></thead><tbody>${(hist || []).map(h => `<tr><td><b>${esc(h.title)}</b></td><td>${esc(h.body || '')}</td><td>${num(h.recipients)}</td><td>${dt(h.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">لم يُنشر شيء بعد</td></tr>'}</tbody></table></div>`);
+    document.getElementById('bs').onclick = async e => {
+      const t = document.getElementById('bt').value.trim(), b = document.getElementById('bb').value.trim();
+      if (!t) return toast('اكتب عنوان الإشعار');
+      if (!confirm('سيصل هذا الإشعار إلى جميع المستخدمين. متابعة؟')) return;
+      e.target.disabled = true;
+      const { data, error } = await sb.rpc('admin_broadcast', { p_title: t, p_body: b });
+      e.target.disabled = false; if (error) return fail(error);
+      toast(`تم النشر إلى ${num(data)} مستخدم`); route();
+    };
+  },
   paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true, scoped: 1,
-    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
+    fields: [{ k: 'agency_id', l: 'المكتب (اتركه فارغاً لوسيلة الأقسام المباشرة)', t: 'select', opts: 'agencies', nullable: true }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
   agencies: crudPage({ title: 'المكاتب', single: 'مكتب', table: 'agencies', order: 'sort', asc: true,
     fields: [{ k: 'section_slug', l: 'القسم', t: 'select', opts: [['travel', 'السفر'], ['parcels', 'الإرساليات'], ['realestate', 'العقارات'], ['transfers', 'التحويلات'], ['security', 'الموافقات الأمنية']], req: 1 }, { k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'ship_base', l: 'إرساليات: الأجرة الثابتة (ج.س)', t: 'number' }, { k: 'ship_per_kg', l: 'إرساليات: لكل كجم', t: 'number' }, { k: 'transfer_pct', l: 'تحويلات: نسبة الرسوم %', t: 'number' }, { k: 'transfer_min', l: 'تحويلات: أدنى رسوم', t: 'number' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'is_open', l: 'مفتوح لاستقبال الطلبات', t: 'bool' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
@@ -613,7 +669,7 @@ async function init(session) {
   const { data: sup } = isAdm ? await sb.rpc('is_super') : { data: false };
   const { data: mg } = await sb.rpc('my_agencies'); myAg = (mg || []).map(x => typeof x === 'object' ? Object.values(x)[0] : x);
   me = { id: session.user.id, email: session.user.email }; isSuper = !!sup;
-  if (!isAdm) startWatch();
+  startWatch();
   route();
 }
 /* تنبيه المشرف بالطلبات الجديدة: فحص كل 20 ثانية، نغمة + إشعار المتصفح + عدّاد في عنوان التبويب */
