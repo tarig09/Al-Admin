@@ -326,7 +326,7 @@ const NAV_ADMIN = [
   ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'الأقسام', 'list'],
   ['services', 'الخدمات والأسعار', 'tag'], ['offers', 'العروض', 'percent'], ['banners', 'الإعلانات', 'megaphone'],
   ['grp', 'الإدارة'],
-  ['broadcast', 'نشر إشعار للجميع', 'megaphone'], ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
+  ['broadcast', 'نشر إشعار للجميع', 'megaphone'], ['fx', 'سعر الصرف', 'banknote'], ['social', 'روابط التواصل', 'megaphone'], ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
 ];
 const NAV_SUP = [
   ['', 'لوحة المكتب', 'chart', 'home'],
@@ -638,6 +638,25 @@ const PAGES = {
       toast(`تم النشر إلى ${num(data)} مستخدم`); route();
     };
   },
+  fx: async () => {
+    const { data: r } = await sb.from('currency_rates').select('*').eq('pair', 'EGP_SDG').maybeSingle();
+    page('سعر الصرف (مصري ⇄ سوداني)', `<div class="card"><p class="mut" style="margin-top:0">يظهر هذا السعر للعملاء في محوّل العملات داخل التطبيق. المصري ← السوداني: المبلغ × السعر. السوداني ← المصري: المبلغ ÷ السعر.</p>
+      <div class="fg"><div class="full"><label>سعر الفك: 1 جنيه مصري = كم جنيه سوداني؟</label><input id="fxr" type="number" step="any" inputmode="decimal" dir="ltr" value="${r ? r.rate : ''}"></div></div>
+      <div id="fxp" class="mut" style="margin:8px 0"></div>
+      <div class="act"><button class="btn" id="fxs">حفظ السعر</button></div>
+      ${r ? `<div class="mut" style="margin-top:10px">آخر تحديث: ${dt(r.updated_at)}</div>` : ''}</div>`);
+    const prev = () => { const x = Number(val('fxr')); document.getElementById('fxp').textContent = x > 0 ? `100 مصري = ${num(100 * x)} سوداني  •  1000 سوداني = ${num(Math.round(1000 / x * 100) / 100)} مصري` : ''; };
+    document.getElementById('fxr').oninput = prev; prev();
+    document.getElementById('fxs').onclick = async e => {
+      const x = Number(val('fxr')); if (!(x > 0)) return toast('أدخل سعراً صحيحاً أكبر من صفر');
+      e.target.disabled = true;
+      const { error } = await sb.from('currency_rates').upsert({ pair: 'EGP_SDG', rate: x }, { onConflict: 'pair' });
+      e.target.disabled = false; if (error) return fail(error); toast('تم حفظ سعر الصرف'); route();
+    };
+  },
+  social: crudPage({ title: 'روابط التواصل الاجتماعي', single: 'رابط', table: 'social_links', order: 'sort', asc: true,
+    fields: [{ k: 'platform', l: 'المنصة', t: 'select', req: 1, opts: [['facebook', 'فيسبوك'], ['tiktok', 'تيك توك'], ['telegram', 'تلجرام'], ['whatsapp', 'واتساب'], ['instagram', 'إنستغرام'], ['youtube', 'يوتيوب'], ['x', 'إكس (تويتر)'], ['snapchat', 'سناب شات'], ['website', 'موقع إلكتروني']] }, { k: 'label', l: 'الاسم الظاهر (اختياري)' }, { k: 'url', l: 'الرابط (يبدأ بـ https://)', req: 1, ltr: 1, full: 1 }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    cols: [sp('الترتيب', r => r.sort), sp('المنصة', r => `<b>${esc(r.platform)}</b>`), sp('الاسم', r => esc(r.label || '—')), sp('الرابط', r => `<span dir="ltr">${esc(r.url)}</span>`), sp('ظاهر', r => yn(r.active))] }),
   paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true, scoped: 1,
     fields: [{ k: 'agency_id', l: 'المكتب (اتركه فارغاً لوسيلة الأقسام المباشرة)', t: 'select', opts: 'agencies', nullable: true }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
