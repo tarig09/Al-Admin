@@ -2,6 +2,8 @@
 (() => {
 const $app = document.getElementById('app');
 const sb = (window.ENV && ENV.SUPABASE_URL) ? supabase.createClient(ENV.SUPABASE_URL, ENV.SUPABASE_ANON_KEY) : null;
+let busCache = null;
+async function buses() { if (!busCache) { const { data } = await sb.from('buses').select('id,name,plate_no,seats_total,bus_type,agency_id').order('name'); busCache = data || []; } return busCache; }
 let me = null, isSuper = false, isAdm = false, myAg = [], officesCache = null, agCache = null;
 
 /* ---------- أدوات ---------- */
@@ -130,7 +132,7 @@ async function fieldHtml(f, v) {
   else if (f.t === 'mapbtn') return `<div class="full" data-mapwrap>${mapControls}</div>`;
   else if (f.t === 'bool') return `<div class="${full}"><label><input type="checkbox" id="${id}" ${(v ?? f.def ?? true) ? 'checked' : ''}>${esc(f.l)}</label></div>`;
   else if (f.t === 'select') {
-    const opts = f.opts === 'offices' ? (await offices()).map(o => [o.slug, o.name_ar]) : f.opts === 'agencies' ? (await agencies()).map(o => [o.id, o.name]) : f.opts;
+    const opts = f.opts === 'offices' ? (await offices()).map(o => [o.slug, o.name_ar]) : f.opts === 'agencies' ? (await agencies()).map(o => [o.id, o.name]) : f.opts === 'buses' ? (await buses()).map(o => [o.id, o.name + (o.plate_no ? ' — ' + o.plate_no : '')]) : f.opts;
     input = `<select id="${id}">${f.nullable ? '<option value="">— بدون —</option>' : ''}${opts.map(o => `<option value="${esc(o[0])}" ${String(o[0]) === String(val0) ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select>`;
   } else if (f.t === 'datetime') input = `<input id="${id}" type="datetime-local" value="${esc(tz(val0))}">`;
   else if (f.t === 'number') input = `<input id="${id}" type="number" step="any" inputmode="decimal" value="${esc(val0)}">`;
@@ -176,6 +178,7 @@ function crudPage(cfg) {
       const fh = (await Promise.all(flds.map(f => fieldHtml(edit && f.lock ? { ...f, ro: true } : f, rec?.[f.k])))).join('');
       const m = modal((edit ? 'تعديل: ' : 'إضافة: ') + cfg.single, `<div class="fg">${fh}</div><div class="act"><button class="btn" id="sv">حفظ</button>${edit && cfg.del !== false ? '<button class="btn red" id="dl">حذف</button>' : ''}</div>`);
       if (m.q('[data-mapwrap]')) wireMapPicker(m.q('.mb'), 'f_lat', 'f_lng');
+      if (m.q('#f_bus_id')) m.q('#f_bus_id').onchange = async e => { const b = (await buses()).find(x => x.id === e.target.value); if (b) { if (m.q('#f_seats_total')) m.q('#f_seats_total').value = b.seats_total; if (m.q('#f_bus_type') && b.bus_type) m.q('#f_bus_type').value = b.bus_type; } };
       m.q('#sv').onclick = async e => {
         const ff = flds.map(f => edit && f.lock ? { ...f, ro: true, edit: true } : f);
         e.target.disabled = true;
@@ -190,7 +193,7 @@ function crudPage(cfg) {
         e.target.disabled = true;
         const r = edit ? await sb.from(cfg.table).update(o).eq(cfg.pk || 'id', rec[cfg.pk || 'id']) : await sb.from(cfg.table).insert(o);
         e.target.disabled = false; if (r.error) return fail(r.error);
-        if (cfg.table === 'offices') officesCache = null; if (cfg.table === 'agencies') agCache = null;
+        if (cfg.table === 'offices') officesCache = null; if (cfg.table === 'agencies') agCache = null; if (cfg.table === 'buses') busCache = null;
         toast('تم الحفظ'); m.close(); route();
       };
       const dl = m.q('#dl'); if (dl) dl.onclick = async () => {
@@ -323,18 +326,19 @@ const NAV_ADMIN = [
   ['grp', 'المكاتب (الوكالات)'],
   ['agencies', 'المكاتب', 'building'], ['supervisors', 'المشرفون', 'users'], ['ratings', 'التقييمات', 'percent'],
   ['grp', 'المحتوى'],
-  ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'الأقسام', 'list'],
+  ['trips', 'الرحلات', 'bus'], ['tripstatus', 'حالة الرحلات والموقع', 'bus'], ['buses', 'الحافلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'الأقسام', 'list'],
   ['services', 'الخدمات والأسعار', 'tag'], ['offers', 'العروض', 'percent'], ['banners', 'الإعلانات', 'megaphone'],
   ['grp', 'الإدارة'],
   ['broadcast', 'نشر إشعار للجميع', 'megaphone'], ['fx', 'سعر الصرف', 'banknote'], ['social', 'روابط التواصل', 'megaphone'], ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
 ];
+const TRAVEL_ST = [['scheduled', 'لم تتحرك بعد'], ['departed', 'تحرك'], ['on_road', 'في الطريق'], ['near', 'قرب يصل'], ['arrived', 'وصل بسلامة']];
 const NAV_SUP = [
   ['', 'لوحة المكتب', 'chart', 'home'],
   ['grp', 'الطلبات'],
   ['verify', 'التحقق من تذكرة', 'badge'], ['bookings', 'الحجوزات', 'bus'], ['shipments', 'الإرساليات', 'package'], ['transfers', 'التحويلات', 'banknote'],
   ['security', 'الموافقات الأمنية', 'shield'], ['proprequests', 'طلبات العقارات', 'home'],
   ['grp', 'مكتبي'],
-  ['myagency', 'ملف المكتب والأسعار', 'building'], ['paymethods', 'وسائل الدفع', 'banknote'], ['trips', 'الرحلات', 'bus'], ['properties', 'العقارات', 'building'], ['offers', 'العروض', 'percent']
+  ['myagency', 'ملف المكتب والأسعار', 'building'], ['paymethods', 'وسائل الدفع', 'banknote'], ['trips', 'الرحلات', 'bus'], ['tripstatus', 'حالة الرحلات والموقع', 'bus'], ['buses', 'الحافلات', 'bus'], ['properties', 'العقارات', 'building'], ['offers', 'العروض', 'percent']
 ];
 let current = '';
 function page(title, html) {
@@ -605,8 +609,8 @@ const PAGES = {
   servicereq: reqPage({ title: 'طلبات الخدمات', single: 'تفاصيل الطلب', table: 'service_requests', statuses: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
     cols: [sp('الرقم', r => `<b dir="ltr">${esc(r.ref_no)}</b>`), sp('المكتب', r => esc(r.office_slug)), sp('الخدمة', r => esc(r.service_name)), sp('الهاتف', r => esc(r.phone)), sp('المكتب', r => esc(r.agencies?.name || '—')), sp('المشرف', r => esc(r.handler_name || '—')), sp('الحالة', r => badge(r.status)), sp('التاريخ', r => dt(r.created_at))] }),
   trips: crudPage({ title: 'الرحلات', single: 'رحلة', table: 'trips', scoped: 1, order: 'depart_at', asc: false,
-    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد (1–100، يمكن زيادته أو تقليله)', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'lat', l: 'موقع الباص الحالي: خط العرض', t: 'number', ltr: 1 }, { k: 'lng', l: 'موقع الباص الحالي: خط الطول', t: 'number', ltr: 1 }, { k: '_map', t: 'mapbtn', full: 1 }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
-    cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الخط', r => `<b>${esc(r.from_city)} ← ${esc(r.to_city)}</b>`), sp('الموعد', r => dt(r.depart_at)), sp('السعر', r => num(r.price)), sp('المقاعد', r => r.seats_total), sp('النوع', r => esc(r.bus_type)), sp('متاحة', r => yn(r.active))] }),
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'from_city', l: 'من', req: 1 }, { k: 'to_city', l: 'إلى', req: 1 }, { k: 'depart_at', l: 'موعد المغادرة', t: 'datetime', req: 1 }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'seats_total', l: 'عدد المقاعد (1–100، يمكن زيادته أو تقليله)', t: 'number', def: 40, req: 1 }, { k: 'bus_type', l: 'نوع الباص', def: 'عادي' }, { k: 'bus_id', l: 'الحافلة (من حافلات المكتب)', t: 'select', opts: 'buses', nullable: true }, { k: 'travel_status', l: 'حالة الرحلة', t: 'select', opts: TRAVEL_ST, def: 'scheduled' }, { k: 'lat', l: 'موقع الباص الحالي: خط العرض', t: 'number', ltr: 1 }, { k: 'lng', l: 'موقع الباص الحالي: خط الطول', t: 'number', ltr: 1 }, { k: '_map', t: 'mapbtn', full: 1 }, { k: 'active', l: 'الرحلة متاحة للحجز', t: 'bool' }],
+    cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الخط', r => `<b>${esc(r.from_city)} ← ${esc(r.to_city)}</b>`), sp('الموعد', r => dt(r.depart_at)), sp('السعر', r => num(r.price)), sp('المقاعد', r => r.seats_total), sp('النوع', r => esc(r.bus_type)), sp('الحالة', r => esc((TRAVEL_ST.find(x => x[0] === r.travel_status) || [])[1] || '—')), sp('متاحة', r => yn(r.active))] }),
   properties: crudPage({ title: 'العقارات', single: 'عقار', table: 'properties', scoped: 1,
     fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'title', l: 'العنوان', req: 1, full: 1 }, { k: 'kind', l: 'النوع', t: 'select', opts: [['شقة', 'شقة'], ['فيلا', 'فيلا'], ['منزل', 'منزل'], ['أرض', 'أرض'], ['محل', 'محل'], ['مكتب', 'مكتب']] }, { k: 'listing', l: 'العرض', t: 'select', opts: [['sale', 'بيع'], ['rent', 'إيجار']] }, { k: 'price', l: 'السعر (ج.س)', t: 'number', req: 1 }, { k: 'city', l: 'المدينة', req: 1 }, { k: 'area', l: 'الحي' }, { k: 'rooms', l: 'الغرف', t: 'number' }, { k: 'baths', l: 'الحمامات', t: 'number' }, { k: 'size_m2', l: 'المساحة م²', t: 'number' }, { k: 'image_url', l: 'صورة العقار', t: 'image', full: 1 }, { k: 'details', l: 'التفاصيل', t: 'textarea' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('العقار', r => `<b>${esc(r.title)}</b>`), sp('النوع', r => esc(r.kind)), sp('العرض', r => r.listing === 'sale' ? 'بيع' : 'إيجار'), sp('السعر', r => num(r.price)), sp('المدينة', r => esc(r.city)), sp('ظاهر', r => yn(r.active))] }),
@@ -657,6 +661,33 @@ const PAGES = {
   social: crudPage({ title: 'روابط التواصل الاجتماعي', single: 'رابط', table: 'social_links', order: 'sort', asc: true,
     fields: [{ k: 'platform', l: 'المنصة', t: 'select', req: 1, opts: [['facebook', 'فيسبوك'], ['tiktok', 'تيك توك'], ['telegram', 'تلجرام'], ['whatsapp', 'واتساب'], ['instagram', 'إنستغرام'], ['youtube', 'يوتيوب'], ['x', 'إكس (تويتر)'], ['snapchat', 'سناب شات'], ['website', 'موقع إلكتروني']] }, { k: 'label', l: 'الاسم الظاهر (اختياري)' }, { k: 'url', l: 'الرابط (يبدأ بـ https://)', req: 1, ltr: 1, full: 1 }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('الترتيب', r => r.sort), sp('المنصة', r => `<b>${esc(r.platform)}</b>`), sp('الاسم', r => esc(r.label || '—')), sp('الرابط', r => `<span dir="ltr">${esc(r.url)}</span>`), sp('ظاهر', r => yn(r.active))] }),
+  buses: crudPage({ title: 'حافلات المكتب', single: 'حافلة', table: 'buses', scoped: 1, order: 'name', asc: true,
+    fields: [{ k: 'agency_id', l: 'المكتب', t: 'select', opts: 'agencies', req: 1 }, { k: 'name', l: 'اسم/رقم الحافلة', req: 1 }, { k: 'plate_no', l: 'رقم اللوحة', ltr: 1 }, { k: 'bus_type', l: 'النوع (عادي، VIP…)' }, { k: 'seats_total', l: 'عدد المقاعد', t: 'number', def: 40, req: 1 }, { k: 'driver_name', l: 'اسم السائق' }, { k: 'driver_phone', l: 'هاتف السائق', ltr: 1 }, { k: 'active', l: 'تعمل', t: 'bool' }],
+    cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الحافلة', r => `<b>${esc(r.name)}</b>`), sp('اللوحة', r => `<span dir="ltr">${esc(r.plate_no || '—')}</span>`), sp('المقاعد', r => r.seats_total), sp('السائق', r => esc(r.driver_name || '—')), sp('تعمل', r => yn(r.active))] }),
+  tripstatus: async () => {
+    await agencies();
+    let q = sb.from('trips').select('*').gte('depart_at', new Date(Date.now() - 4 * 864e5).toISOString()).order('depart_at');
+    if (!isAdm) q = q.in('agency_id', myAg.length ? myAg : ['00000000-0000-0000-0000-000000000000']);
+    const { data } = await q; const rows = data || [];
+    page('حالة الرحلات والموقع', `<p class="mut">اضغط على الحالة الحالية للرحلة وسيصل إشعار تلقائي للمسافرين. حدّث الموقع ليظهر الباص على خريطة المسافر.</p>` + (rows.map(t => `<div class="card" data-t="${t.id}" style="margin-bottom:12px"><div class="row" style="justify-content:space-between"><b>${esc(t.from_city)} ← ${esc(t.to_city)}</b><span class="mut">${dt(t.depart_at)} • ${esc(agName(t.agency_id))}</span></div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">${TRAVEL_ST.map(x => `<button class="btn ${t.travel_status === x[0] ? '' : 'ghost'} sm" data-st="${x[0]}">${x[1]}</button>`).join('')}</div>
+      <div class="row" style="margin-top:10px;gap:8px"><span class="mut">${t.lat != null ? 'الموقع: ' + Number(t.lat).toFixed(4) + ', ' + Number(t.lng).toFixed(4) : 'لم يُحدَّد الموقع'}</span><button class="btn ghost sm" data-loc>تحديث الموقع</button></div></div>`).join('') || '<div class="empty">لا توجد رحلات</div>'));
+    document.querySelectorAll('[data-st]').forEach(b => b.onclick = async () => {
+      const id = b.closest('[data-t]').dataset.t; b.disabled = true;
+      const { error } = await sb.from('trips').update({ travel_status: b.dataset.st }).eq('id', id);
+      if (error) { b.disabled = false; return fail(error); } toast('تم تحديث الحالة وإشعار المسافرين'); route();
+    });
+    document.querySelectorAll('[data-loc]').forEach(b => b.onclick = () => {
+      const id = b.closest('[data-t]').dataset.t, t = rows.find(x => x.id === id);
+      const m = modal('تحديث موقع الباص', `<div class="fg"><div><label>خط العرض</label><input id="lat" type="number" step="any" dir="ltr" value="${t.lat ?? ''}"></div><div><label>خط الطول</label><input id="lng" type="number" step="any" dir="ltr" value="${t.lng ?? ''}"></div></div>${mapControls}<div class="act"><button class="btn" id="ls">حفظ الموقع</button></div>`);
+      wireMapPicker(m.q('.mb'), 'lat', 'lng');
+      m.q('#ls').onclick = async () => {
+        const la = m.q('#lat').value, ln = m.q('#lng').value; if (la === '' || ln === '') return toast('اختر الموقع أولاً');
+        const { error } = await sb.from('trips').update({ lat: Number(la), lng: Number(ln) }).eq('id', id);
+        if (error) return fail(error); m.close(); toast('تم تحديث الموقع'); route();
+      };
+    });
+  },
   paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true, scoped: 1,
     fields: [{ k: 'agency_id', l: 'المكتب (اتركه فارغاً لوسيلة الأقسام المباشرة)', t: 'select', opts: 'agencies', nullable: true }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
@@ -673,7 +704,7 @@ async function route() {
   if (!me) return viewLogin();
   const parts = (location.hash || '#/').replace(/^#\/?/, '').split('/'), key = parts[0];
   if (key === 'verify' && parts[1]) { current = 'verify'; loading(); return viewVerify(decodeURIComponent(parts[1])); }
-  const SUPOK = ['', 'myagency', 'paymethods', 'verify', 'bookings', 'shipments', 'transfers', 'security', 'proprequests', 'trips', 'properties', 'offers'];
+  const SUPOK = ['', 'myagency', 'paymethods', 'verify', 'bookings', 'shipments', 'transfers', 'security', 'proprequests', 'trips', 'tripstatus', 'buses', 'properties', 'offers'];
   if (!isAdm && !SUPOK.includes(key)) return go('#/');
   current = PAGES[key] || key === '' ? key : '';
   loading();
