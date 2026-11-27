@@ -329,7 +329,7 @@ const NAV_ADMIN = [
   ['trips', 'الرحلات', 'bus'], ['tripstatus', 'حالة الرحلات والموقع', 'bus'], ['buses', 'الحافلات', 'bus'], ['properties', 'العقارات', 'building'], ['offices', 'الأقسام', 'list'],
   ['services', 'الخدمات والأسعار', 'tag'], ['offers', 'العروض', 'percent'], ['banners', 'الإعلانات', 'megaphone'],
   ['grp', 'الإدارة'],
-  ['broadcast', 'نشر إشعار للجميع', 'megaphone'], ['fx', 'سعر الصرف', 'banknote'], ['social', 'روابط التواصل', 'megaphone'], ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
+  ['broadcast', 'نشر إشعار للجميع', 'megaphone'], ['fx', 'سعر الصرف', 'banknote'], ['fxreq', 'طلبات تبديل العملات', 'banknote'], ['social', 'روابط التواصل', 'megaphone'], ['customers', 'العملاء', 'users'], ['staff', 'الموظفون', 'badge'], ['paymethods', 'وسائل الدفع', 'banknote'], ['rates', 'العمولات', 'percent'], ['reports', 'التقارير', 'report'], ['settings', 'الإعدادات', 'settings']
 ];
 const TRAVEL_ST = [['scheduled', 'لم تتحرك بعد'], ['departed', 'تحرك'], ['on_road', 'في الطريق'], ['near', 'قرب يصل'], ['arrived', 'وصل بسلامة']];
 const NAV_SUP = [
@@ -546,16 +546,17 @@ async function viewMyAgency() {
     ${a.section_slug === 'transfers' ? `<div class="kv"><span>رسوم التحويل</span><b>${a.transfer_pct != null || a.transfer_min != null ? (a.transfer_pct ?? 0) + '% بحد أدنى ' + num(a.transfer_min || 0) : 'بدون رسوم'}</b></div>` : ''}</div>`).join('') || '<div class="err">حسابك غير مرتبط بمكتب.</div>');
   document.querySelectorAll('[data-e]').forEach(b => b.onclick = async () => {
     const a = A.find(x => x.id === b.dataset.e);
-    const F = [{ k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }];
+    const F = [{ k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'address', l: 'عنوان المكتب', full: 1 }, { k: 'lat', l: 'موقع المكتب: خط العرض', t: 'number', ltr: 1 }, { k: 'lng', l: 'موقع المكتب: خط الطول', t: 'number', ltr: 1 }, { k: '_map', t: 'mapbtn', full: 1 }];
     if (a.section_slug === 'parcels') F.push({ k: 'ship_base', l: 'أجرة الإرسالية الثابتة (ج.س)', t: 'number' }, { k: 'ship_per_kg', l: 'السعر لكل كجم', t: 'number' });
     if (a.section_slug === 'transfers') F.push({ k: 'transfer_pct', l: 'نسبة رسوم التحويل %', t: 'number' }, { k: 'transfer_min', l: 'أدنى رسوم (ج.س)', t: 'number' });
     const fh = (await Promise.all(F.map(f => fieldHtml(f, a[f.k])))).join('');
     const m = modal('ملف المكتب', `<div class="fg">${fh}</div><div class="act"><button class="btn" id="sv">حفظ</button></div>`);
+    wireMapPicker(m.q('.mb'), 'f_lat', 'f_lng');
     m.q('#sv').onclick = async e => {
       e.target.disabled = true;
       if (!(await uploadImages(F, a.id))) { e.target.disabled = false; return; }
       const o = readForm(F); if (!o.name) { e.target.disabled = false; return toast('اسم المكتب مطلوب'); }
-      const { error } = await sb.rpc('agency_update_profile', { p_agency: a.id, p_name: o.name, p_logo: o.logo_url, p_desc: o.description, p_phone: o.phone, p_whatsapp: o.whatsapp, p_ship_base: o.ship_base ?? null, p_ship_per_kg: o.ship_per_kg ?? null, p_transfer_pct: o.transfer_pct ?? null, p_transfer_min: o.transfer_min ?? null });
+      const { error } = await sb.rpc('agency_update_profile', { p_agency: a.id, p_name: o.name, p_logo: o.logo_url, p_desc: o.description, p_phone: o.phone, p_whatsapp: o.whatsapp, p_ship_base: o.ship_base ?? null, p_ship_per_kg: o.ship_per_kg ?? null, p_transfer_pct: o.transfer_pct ?? null, p_transfer_min: o.transfer_min ?? null, p_lat: o.lat ?? null, p_lng: o.lng ?? null, p_address: o.address || null });
       e.target.disabled = false; if (error) return fail(error); agCache = null; toast('تم الحفظ'); m.close(); route();
     };
   });
@@ -688,11 +689,26 @@ const PAGES = {
       };
     });
   },
+  fxreq: async () => {
+    loading();
+    const { data } = await sb.from('fx_requests').select('*').order('created_at', { ascending: false }).limit(200);
+    const rows = data || [], ids = [...new Set(rows.map(r => r.user_id))];
+    const pm = {}; if (ids.length) { const { data: ps } = await sb.from('profiles').select('id,full_name,phone').in('id', ids); (ps || []).forEach(p => pm[p.id] = p); }
+    const ST = { pending: ['قيد المراجعة', 'warn'], approved: ['تمت الموافقة', 'ok'], rejected: ['مرفوض', 'bad'] };
+    page('طلبات تبديل العملات', `<p class="mut">لا يُعتمد التبديل إلا بعد موافقتك. السعر المطلوب هو ما أدخله العميل، وبجانبه سعر الصرف الرسمي وقت الطلب.</p><div class="tw"><table class="tbl"><thead><tr><th>الرقم</th><th>العميل</th><th>الاتجاه</th><th>المبلغ</th><th>السعر المطلوب</th><th>النتيجة</th><th>السعر الرسمي</th><th>الحالة</th><th></th></tr></thead><tbody>${rows.map(r => { const eg = r.direction === 'egp_sdg'; return `<tr data-id="${r.id}"><td dir="ltr">${esc(r.ref_no)}</td><td>${esc((pm[r.user_id] || {}).full_name || '—')}<div class="mut" dir="ltr">${esc((pm[r.user_id] || {}).phone || '')}</div></td><td>${eg ? 'مصري ← سوداني' : 'سوداني ← مصري'}</td><td>${num(r.amount)} ${eg ? 'EGP' : 'SDG'}</td><td>${num(r.requested_rate)}</td><td><b>${num(r.result_amount)} ${eg ? 'SDG' : 'EGP'}</b></td><td>${r.official_rate ? num(r.official_rate) : '—'}</td><td><span class="badge ${ST[r.status][1]}">${ST[r.status][0]}</span>${r.note ? `<div class="mut">${esc(r.note)}</div>` : ''}</td><td>${r.status === 'pending' ? `<button class="btn sm" data-ok>موافقة</button> <button class="btn ghost sm" data-no>رفض</button>` : dt(r.handled_at)}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">لا توجد طلبات</td></tr>'}</tbody></table></div>`);
+    const decide = async (id, st) => {
+      const note = st === 'rejected' ? (prompt('سبب الرفض (اختياري)') ?? null) : ''; if (note === null) return;
+      if (st === 'approved' && !confirm('اعتماد طلب التبديل؟')) return;
+      const { error } = await sb.rpc('admin_fx_decide', { p_id: id, p_status: st, p_note: note }); if (error) return fail(error); toast('تم'); route();
+    };
+    document.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => decide(b.closest('tr').dataset.id, 'approved'));
+    document.querySelectorAll('[data-no]').forEach(b => b.onclick = () => decide(b.closest('tr').dataset.id, 'rejected'));
+  },
   paymethods: crudPage({ title: 'وسائل الدفع', single: 'وسيلة دفع', table: 'payment_methods', order: 'sort', asc: true, scoped: 1,
     fields: [{ k: 'agency_id', l: 'المكتب (اتركه فارغاً لوسيلة الأقسام المباشرة)', t: 'select', opts: 'agencies', nullable: true }, { k: 'name', l: 'اسم الوسيلة (مثل: بنكك، فوري)', req: 1, full: 1 }, { k: 'account_no', l: 'رقم الحساب', req: 1, ltr: 1 }, { k: 'holder', l: 'اسم صاحب الحساب' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'note', l: 'ملاحظة للعميل (اختياري)', t: 'textarea' }, { k: 'active', l: 'ظاهرة للعملاء', t: 'bool' }],
     cols: [sp('المكتب', r => esc(agName(r.agency_id))), sp('الترتيب', r => r.sort), sp('الوسيلة', r => `<b>${esc(r.name)}</b>`), sp('رقم الحساب', r => `<span dir="ltr">${esc(r.account_no)}</span>`), sp('صاحب الحساب', r => esc(r.holder || '—')), sp('ظاهرة', r => yn(r.active))] }),
   agencies: crudPage({ title: 'المكاتب', single: 'مكتب', table: 'agencies', order: 'sort', asc: true,
-    fields: [{ k: 'section_slug', l: 'القسم', t: 'select', opts: [['travel', 'السفر'], ['parcels', 'الإرساليات'], ['realestate', 'العقارات'], ['transfers', 'التحويلات'], ['security', 'الموافقات الأمنية']], req: 1 }, { k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'ship_base', l: 'إرساليات: الأجرة الثابتة (ج.س)', t: 'number' }, { k: 'ship_per_kg', l: 'إرساليات: لكل كجم', t: 'number' }, { k: 'transfer_pct', l: 'تحويلات: نسبة الرسوم %', t: 'number' }, { k: 'transfer_min', l: 'تحويلات: أدنى رسوم', t: 'number' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'is_open', l: 'مفتوح لاستقبال الطلبات', t: 'bool' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
+    fields: [{ k: 'section_slug', l: 'القسم', t: 'select', opts: [['travel', 'السفر'], ['parcels', 'الإرساليات'], ['realestate', 'العقارات'], ['transfers', 'التحويلات'], ['security', 'الموافقات الأمنية']], req: 1 }, { k: 'name', l: 'اسم المكتب', req: 1 }, { k: 'logo_url', l: 'شعار المكتب', t: 'image', full: 1 }, { k: 'phone', l: 'الهاتف', ltr: 1 }, { k: 'whatsapp', l: 'واتساب (أرقام مع رمز الدولة)', ltr: 1 }, { k: 'address', l: 'عنوان المكتب', full: 1 }, { k: 'lat', l: 'موقع المكتب: خط العرض', t: 'number', ltr: 1 }, { k: 'lng', l: 'موقع المكتب: خط الطول', t: 'number', ltr: 1 }, { k: '_map', t: 'mapbtn', full: 1 }, { k: 'ship_base', l: 'إرساليات: الأجرة الثابتة (ج.س)', t: 'number' }, { k: 'ship_per_kg', l: 'إرساليات: لكل كجم', t: 'number' }, { k: 'transfer_pct', l: 'تحويلات: نسبة الرسوم %', t: 'number' }, { k: 'transfer_min', l: 'تحويلات: أدنى رسوم', t: 'number' }, { k: 'sort', l: 'الترتيب', t: 'number', def: 0 }, { k: 'description', l: 'نبذة عن المكتب', t: 'textarea' }, { k: 'is_open', l: 'مفتوح لاستقبال الطلبات', t: 'bool' }, { k: 'active', l: 'ظاهر في التطبيق', t: 'bool' }],
     cols: [sp('المكتب', r => `<b>${esc(r.name)}</b>`), sp('القسم', r => esc(r.section_slug)), sp('التقييم', r => `${Number(r.rating_avg).toFixed(1)} (${r.rating_count})`), sp('الهاتف', r => esc(r.phone || '—')), sp('مفتوح', r => yn(r.is_open)), sp('ظاهر', r => yn(r.active))] }),
   supervisors: viewSupervisors, ratings: viewRatings, myagency: viewMyAgency,
   verify: () => viewVerify(), customers: viewCustomers, staff: viewStaff, rates: viewRates, reports: viewReports, settings: viewSettings
